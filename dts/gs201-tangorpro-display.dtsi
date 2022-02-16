@@ -14,6 +14,10 @@
 	};
 };
 
+&s2mpu_dpu0 {
+	always-on;
+};
+
 &hsi2c_6 {
 	#address-cells = <1>;
 	#size-cells = <0>;
@@ -88,6 +92,8 @@
 
 &drmdecon0 {
 	override-hibernation;
+	memory-region = <&fb_handover>;
+	samsung,iommu-identity-map = <0x0 0xFAC00000 0x01400000>;
 };
 
 &dsim_modes {

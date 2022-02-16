@@ -8,6 +8,7 @@
 
 /* Display: vddi-supply voltage */
 &m_ldo24_reg {
+	regulator-boot-on;
 	regulator-min-microvolt = <1800000>;
 	regulator-max-microvolt = <1800000>;
 	schematic-name = "L24M_DISP_VDDI";
