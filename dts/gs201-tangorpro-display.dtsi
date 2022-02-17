@@ -7,6 +7,13 @@
  */
 #include "gs201-tangorpro-display-constants.dtsi"
 
+&reserved_memory {
+	fb_handover: fb_handover {
+		compatible = "exynos,fb_handover";
+		reg = <0x0 0xfac00000 0x01400000>;
+	};
+};
+
 &hsi2c_6 {
 	#address-cells = <1>;
 	#size-cells = <0>;
