@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Common display configurations for Tangorpro display.
+ *
+ * Copyright 2022 Google LLC
+ *
+ */
+
+reset-gpios = <&gpa7 1 GPIO_ACTIVE_HIGH>;
+vddd-supply = <&m_ldo28_reg>;
+vddd-normal-microvolt = <TANGORPRO_VDDD_NORMAL_MICROVOLT>;
+vddd-lp-microvolt = <TANGORPRO_VDDD_LP_MICROVOLT>;
+vci-supply = <&m_ldo27_reg>;
+vddi-supply = <&s_bucka_reg>;
+touch = <&spitouch>;

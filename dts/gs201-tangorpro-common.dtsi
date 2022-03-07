@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * tangorpro device tree source
+ *
+ * Copyright 2022 Google,LLC
+ */
+
+#include <dt-bindings/regulator/samsung,s2mpg-regulator.h>
+
+#include "google-base/gs201-common.dtsi"
+#include "google-base/gs201-cloudripper-battery.dtsi"
+#include "google-base/gs201-cloudripper-bcl.dtsi"
+#include "google-base/gs201-cloudripper-bluetooth.dtsi"
+#include "google-base/gs201-pantah-charging.dtsi"
+#include "google-base/gs201-cloudripper-cp-s5300-sit.dtsi"
+#include "google-base/gs201-cloudripper-ese.dtsi"
+#include "google-base/gs201-cloudripper-gsa-gsc.dtsi"
+#include "google-base/gs201-cloudripper-nfc.dtsi"
+#include "google-base/gs201-cloudripper-sbbm.dtsi"
+#include "google-base/gs201-cloudripper-wlan.dtsi"
+
+#include "google-base/gs201-ravenclaw-fingerprint.dtsi"
+#include "google-base/gs201-ravenclaw-usecases.dtsi"
+#include "google-base/gs201-ravenclaw-uwb.dtsi"
+
+#include "google-base/gs201-pantah-camera-pmic.dtsi"
+#include "gs201-tangorpro-camera.dtsi"
+#include "gs201-tangorpro-display.dtsi"
+#include "gs201-tangorpro-pmic.dtsi"
+#include "gs201-tangorpro-touch.dtsi"
+#include "gs201-tangorpro-thermal.dtsi"
+#include "gs201-tangorpro-audio.dtsi"
+#include "gs201-tangorpro-battery.dtsi"
+#include "google-base/gs101-faceauth-dma-heap.dtsi"
+#include "gs201-tangorpro-charging.dtsi"
+#include "gs201-tangorpro-wcharger.dtsi"
+#include "gs201-tangorpro-usb.dtsi"
+#include "google-base/gs201-pantah-pmic.dtsi"

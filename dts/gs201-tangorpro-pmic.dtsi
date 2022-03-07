@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Tangorpro-specific PMIC settings
+ *
+ * Copyright 2022 Google LLC.
+ *
+ */
+
+/* Display: vci-supply voltage */
+&m_ldo27_reg {
+	regulator-min-microvolt = <TANGORPRO_VCI_MICROVOLT>;
+	regulator-max-microvolt = <TANGORPRO_VCI_MICROVOLT>;
+};
+
+/* Display: Tangorpro VDDD-supply voltage */
+&m_ldo28_reg {
+	regulator-initial-mode = <SEC_OPMODE_ON>;
+	regulator-min-microvolt = <TANGORPRO_VDDD_LP_MICROVOLT>;
+	regulator-max-microvolt = <TANGORPRO_VDDD_NORMAL_MICROVOLT>;
+	regulator-ramp-delay = <1200>;
+	regulator-enable-ramp-delay = <125>;
+};
+
+/* UWB: Ravenclaw and Tangorpro use LDO[16,17]S for UWB */
+&s_ldo16_reg {
+	regulator-always-on;
+	regulator-initial-mode = <SEC_OPMODE_ON>;
+};
+
+/* UWB: Ravenclaw and Tangorpro use LDO[16,17]S for UWB */
+&s_ldo17_reg {
+	regulator-always-on;
+	regulator-initial-mode = <SEC_OPMODE_ON>;
+};
