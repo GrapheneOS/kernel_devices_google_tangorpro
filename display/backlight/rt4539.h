@@ -15,6 +15,7 @@ enum rt4539_chip_id {
 /**
  * struct rt4539_platform_data
  * @name : Backlight driver name. If it is not defined, default name is set.
+ * @bit_selection : indicate the brightness resolution
  * @dimming_mode : value of dimming mode selection field
  * @boost_switch_freq: value of boost switching frequency
  * @current_max : value of MAX_CURRENT register
@@ -29,6 +30,7 @@ enum rt4539_chip_id {
  */
 struct rt4539_platform_data {
 	const char *name;
+	u8 bit_selection;
 	u8 dimming_mode;
 	u8 boost_switch_freq;
 	u8 current_max;

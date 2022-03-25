@@ -14,12 +14,14 @@
 #include "rt4539.h"
 
 #define DEFAULT_BL_NAME				"lcd-backlight"
-#define MAX_BRIGHTNESS				255
+#define BIT_SELECTION_MIN_BITS			8
+#define BIT_SELECTION_MAX_BITS			12
 
 #define RT4539_REG00				(0x00)
 #define RT4539_REG01				(0x01)
 #define RT4539_REG02				(0x02)
 #define RT4539_REG03				(0x03)
+#define RT4539_REG04				(0x04)
 #define RT4539_REG05				(0x05)
 #define RT4539_REG07				(0x07)
 #define RT4539_REG09				(0x09)
@@ -32,6 +34,7 @@
 #define RT4539_REG03_BIT_SELECTION_MASK		(0x07)
 #define RT4539_REG03_ILED_MAPPING_MASK		(0x80)
 #define RT4539_REG03_ILED_MAPPING_SHIFT		(7)
+#define RT4539_REG04_BRIGHTNESS_MSB_MASK	(0x0F)
 #define RT4539_REG07_ADV_BRIGHT_CTRL_MASK	(0x03)
 #define RT4539_REG09_PFM_ENABLE_MASK		(0x01)
 #define RT4539_REG09_LED_UNUSED_CHECK_MASK	(0x80)
@@ -42,9 +45,6 @@
 #define RT4539_REG0B_BL_EN_MASK			(0x80)
 #define RT4539_REG0B_BL_EN_SHIFT		(7)
 #define RT4539_REG0B_LED_EN_MASK		(0x7E)
-
-/* register field values */
-#define RT4539_REG03_BIT_SELECTION_8BITS        (0x00)
 
 struct rt4539 {
 	struct i2c_client *client;
@@ -82,9 +82,16 @@ static int rt4539_update_field(struct rt4539 *lp, u8 reg, u8 mask, u8 data)
 
 static inline int rt4539_set_brightness(struct rt4539 *lp, u32 brightness)
 {
-	u8 val = brightness & 0xFF;
+	u8 resolution = lp->pdata->bit_selection + BIT_SELECTION_MIN_BITS;
+	u16 val = brightness & (BIT(resolution) - 1);
+	int ret = 0;
 
-	return rt4539_write_byte(lp, RT4539_REG05, val);
+	if (lp->pdata->bit_selection) {
+		u8 msb = val >> 8;
+
+		ret = rt4539_update_field(lp, RT4539_REG04, RT4539_REG04_BRIGHTNESS_MSB_MASK, msb);
+	}
+	return ret ? ret : rt4539_write_byte(lp, RT4539_REG05, (u8) (val & 0x00FF));
 }
 
 static int rt4539_bl_update_status(struct backlight_device *bl)
@@ -109,10 +116,11 @@ static int rt4539_backlight_register(struct rt4539 *lp)
 	struct backlight_properties props;
 	struct rt4539_platform_data *pdata = lp->pdata;
 	const char *name = pdata->name ? : DEFAULT_BL_NAME;
+	u8 resolution = lp->pdata->bit_selection + BIT_SELECTION_MIN_BITS;
 
 	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_PLATFORM;
-	props.max_brightness = MAX_BRIGHTNESS;
+	props.max_brightness = BIT(resolution) - 1;
 
 	if (pdata->initial_brightness > props.max_brightness)
 		pdata->initial_brightness = props.max_brightness;
@@ -168,7 +176,7 @@ static int rt4539_configure(struct rt4539 *lp)
 	/* set bit selection */
 	ret = rt4539_update_field(lp, RT4539_REG03,
 		RT4539_REG03_BIT_SELECTION_MASK,
-		RT4539_REG03_BIT_SELECTION_8BITS);
+		lp->pdata->bit_selection);
 	if (ret < 0)
 		return ret;
 
@@ -230,6 +238,7 @@ static int rt4539_parse_dt(struct rt4539 *lp)
 	struct device *dev = lp->dev;
 	struct device_node *node = dev->of_node;
 	struct rt4539_platform_data *pdata;
+	u8 resolution;
 
 	if (!node) {
 		dev_err(dev, "no platform data\n");
@@ -241,6 +250,15 @@ static int rt4539_parse_dt(struct rt4539 *lp)
 		return -ENOMEM;
 
 	of_property_read_string(node, "bl-name", &pdata->name);
+
+	of_property_read_u8(node, "bit-selection", &resolution);
+	if (resolution > BIT_SELECTION_MAX_BITS)
+		resolution = BIT_SELECTION_MAX_BITS;
+	else if (resolution < BIT_SELECTION_MIN_BITS)
+		resolution = BIT_SELECTION_MIN_BITS;
+	pdata->bit_selection = resolution - BIT_SELECTION_MIN_BITS;
+	dev_info(dev, "%u bits brightness resolution\n", resolution);
+
 	of_property_read_u8(node, "dimming-mode", &pdata->dimming_mode);
 	of_property_read_u8(node, "boost-switch-freq", &pdata->boost_switch_freq);
 	of_property_read_u8(node, "current-max", &pdata->current_max);
