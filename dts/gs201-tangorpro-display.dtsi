@@ -41,8 +41,10 @@
 
 		bl-name = "lcd-bl";
 
-		/* PWM Mode (Direct PWM) */
-		dimming-mode = /bits/ 8 <0x00>;
+		bit-selection = /bits/ 8 <12>;
+
+		/* DC Mode */
+		dimming-mode = /bits/ 8 <0x04>;
 
 		/* 1225kHz */
 		boost-switch-freq = /bits/ 8 <0x0c>;
@@ -50,8 +52,8 @@
 		/* max current 23mA */
 		current-max = /bits/ 8 <0x9b>;
 
-		/* PWM only */
-		brightness-control = /bits/ 8 <0x00>;
+		/* PWM signal multiplied with I2C */
+		brightness-control = /bits/ 8 <0x02>;
 
 		/* 5 LEDS */
 		enabled-leds = /bits/ 8 <0x3e>;
@@ -59,7 +61,6 @@
 		/* 25V */
 		boost-ovp-selection = /bits/ 8 <0x0f>;
 		led-short-protection;
-		exponential-mapping;
 		pfm-enable;
 	};
 };
@@ -103,7 +104,6 @@
 		touch = <&spitouch>;
 		dual-dsi = "main";
 		backlight = <&rt4539_bl>;
-		bl-ctrl-dcs;
 		#include "gs201-tangorpro-display-common.dtsi"
 	};
 	csot_ppa957db2d_m0: panel@2 {
@@ -123,7 +123,6 @@
 		touch = <&spitouch>;
 		dual-dsi = "main";
 		backlight = <&rt4539_bl>;
-		bl-ctrl-dcs;
 		#include "gs201-tangorpro-display-common.dtsi"
 	};
 	panel@4 {
