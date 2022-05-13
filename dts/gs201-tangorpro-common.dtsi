@@ -25,7 +25,6 @@
 #include "gs201-tangorpro-camera.dtsi"
 #include "gs201-tangorpro-display.dtsi"
 #include "gs201-tangorpro-pmic.dtsi"
-#include "gs201-tangorpro-touch.dtsi"
 #include "gs201-tangorpro-thermal.dtsi"
 #include "gs201-tangorpro-audio.dtsi"
 #include "gs201-tangorpro-battery.dtsi"

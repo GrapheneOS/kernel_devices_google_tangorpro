@@ -7,14 +7,126 @@
  */
 #include "gs201-tangorpro-display-constants.dtsi"
 
+&hsi2c_6 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	clock-frequency = <400000>;
+
+	lp8556_bl: backlight@2c {
+		compatible = "ti,lp8556";
+		reg = <0x2c>;
+
+		bl-name = "lcd-bl";
+		dev-ctrl = /bits/ 8 <0x81>;
+
+		/* 5 LED strings enabled */
+		led-string-en = /bits/ 8 <0x1f>;
+
+		/* set maximum current at 23mA */
+		rom_cfg1 {
+			rom-addr = /bits/ 8 <0xa1>;
+			rom-val = /bits/ 8 <0x4f>;
+		};
+
+		/* PWM output phase config for 5 LED strings */
+		rom_cfg5 {
+			rom-addr = /bits/ 8 <0xa5>;
+			rom-val = /bits/ 8 <0x14>;
+		};
+	};
+	rt4539_bl: backlight@3c {
+		compatible = "richtek,rt4539";
+		reg = <0x3c>;
+
+		bl-name = "lcd-bl";
+
+		/* PWM Mode (Direct PWM) */
+		dimming-mode = /bits/ 8 <0x00>;
+
+		/* 1225kHz */
+		boost-switch-freq = /bits/ 8 <0x0c>;
+
+		/* max current 23mA */
+		current-max = /bits/ 8 <0x9b>;
+
+		/* PWM only */
+		brightness-control = /bits/ 8 <0x00>;
+
+		/* 5 LEDS */
+		enabled-leds = /bits/ 8 <0x3e>;
+
+		/* 25V */
+		boost-ovp-selection = /bits/ 8 <0x0f>;
+		led-short-protection;
+		exponential-mapping;
+		pfm-enable;
+	};
+};
+
+&drmdecon0 {
+	override-hibernation;
+};
+
+&dsim_modes {
+	dsim-modes {
+		1600x2560 {
+			mode-name = "1600x2560";
+			pmsk = <
+				0x2 0xA6 0x2 0x2DAB /* p m s k */
+				>;
+			hs-clk = <1021>;
+			esc-clk = <20>;
+		};
+	};
+};
+
 &drmdsim0 {
-	sdc_s6e3hc3_c10: panel@0 {
-		compatible = "samsung,s6e3hc3-c10";
-		label = "sdc-s6e3hc3-c10";
+	status = "ok";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	boe_ts110f5mlg0_m0: panel@0 {
+		compatible = "boe,ts110f5mlg0";
+		label = "boe-ts110f5mlg0";
 		channel = <0>;
+		touch = <&spitouch>;
+		dual-dsi = "main";
+		backlight = <&lp8556_bl>;
+		bl-ctrl-dcs;
 		#include "gs201-tangorpro-display-common.dtsi"
 	};
-	panel@1 {
+	boe_ts110f5mlg0_rt4539_m0: panel@1 {
+		compatible = "boe,ts110f5mlg0";
+		label = "boe-ts110f5mlg0-rt4539";
+		channel = <0>;
+		touch = <&spitouch>;
+		dual-dsi = "main";
+		backlight = <&rt4539_bl>;
+		bl-ctrl-dcs;
+		#include "gs201-tangorpro-display-common.dtsi"
+	};
+	csot_ppa957db2d_m0: panel@2 {
+		compatible = "csot,ppa957db2d";
+		label = "csot-ppa957db2d";
+		channel = <0>;
+		touch = <&spitouch>;
+		dual-dsi = "main";
+		backlight = <&lp8556_bl>;
+		bl-ctrl-dcs;
+		#include "gs201-tangorpro-display-common.dtsi"
+	};
+	csot_ppa957db2d_rt4539_m0: panel@3 {
+		compatible = "csot,ppa957db2d";
+		label = "csot-ppa957db2d-rt4539";
+		channel = <0>;
+		touch = <&spitouch>;
+		dual-dsi = "main";
+		backlight = <&rt4539_bl>;
+		bl-ctrl-dcs;
+		#include "gs201-tangorpro-display-common.dtsi"
+	};
+	panel@4 {
 		compatible = "samsung,emul";
 		label = "samsung-emul";
 		channel = <0>;
@@ -22,20 +134,39 @@
 		/* reset, power */
 		reset-gpios = <&gpa7 1 GPIO_ACTIVE_HIGH>;
 	};
-	boe_nt37290: panel@2 {
-		compatible = "boe,nt37290";
-		label = "boe-nt37290";
-		channel = <0>;
-		#include "gs201-tangorpro-display-common.dtsi"
-	};
-	sdc_s6e3hc4: panel@3 {
-		compatible = "samsung,s6e3hc4";
-		label = "sdc-s6e3hc4";
-		channel = <0>;
-		#include "gs201-tangorpro-display-common.dtsi"
-	};
 };
 
-&sdc_s6e3hc4 {
-	vddd-normal-microvolt = <TANGORPRO_3HC4_VDDD_NORMAL_MICROVOLT>;
+&drmdsim1 {
+	status = "ok";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	boe_ts110f5mlg0_m1: panel@0 {
+		compatible = "boe,ts110f5mlg0";
+		label = "boe-ts110f5mlg0";
+		channel = <0>;
+		touch = <&spitouch>;
+		dual-dsi = "sec";
+	};
+	boe_ts110f5mlg0_rt4539_m1: panel@1 {
+		compatible = "boe,ts110f5mlg0";
+		label = "boe-ts110f5mlg0-rt4539";
+		channel = <0>;
+		touch = <&spitouch>;
+		dual-dsi = "sec";
+	};
+	csot_ppa957db2d_m1: panel@2 {
+		compatible = "csot,ppa957db2d";
+		label = "csot-ppa957db2d";
+		channel = <0>;
+		touch = <&spitouch>;
+		dual-dsi = "sec";
+	};
+	csot_ppa957db2d_rt4539_m1: panel@3 {
+		compatible = "csot,ppa957db2d";
+		label = "csot-ppa957db2d-rt4539";
+		channel = <0>;
+		touch = <&spitouch>;
+		dual-dsi = "sec";
+	};
 };
