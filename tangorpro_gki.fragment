@@ -1,0 +1,5 @@
+#
+# tangorpro specific configs
+#
+
+CONFIG_BACKLIGHT_LP855X=m

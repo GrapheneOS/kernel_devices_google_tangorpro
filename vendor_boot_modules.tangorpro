@@ -83,6 +83,7 @@ janeiro.ko
 keycombo.ko
 keydebug.ko
 logbuffer.ko
+lp855x_bl.ko
 lzo-rle.ko
 lzo.ko
 mailbox-wc.ko
@@ -100,13 +101,10 @@ memlat-devfreq.ko
 nitrous.ko
 odpm.ko
 p9221.ko
+panel-boe-ts110f5mlg0.ko
+panel-csot-ppa957db2d.ko
 panel-samsung-drv.ko
 panel-samsung-emul.ko
-panel-samsung-s6e3fc3.ko
-panel-samsung-s6e3fc3-p10.ko
-panel-samsung-s6e3hc2.ko
-panel-samsung-s6e3hc3.ko
-panel-samsung-sofef01.ko
 pca9468.ko
 pcie-exynos-core.ko
 pcie-exynos-gs201-rc-cal.ko
@@ -120,6 +118,7 @@ pkvm-s2mpu.ko
 pl330.ko
 pmic_class.ko
 power_stats.ko
+rt4539_bl.ko
 rtc-s2mpg12.ko
 s2mpg12-key.ko
 s2mpg12-mfd.ko
