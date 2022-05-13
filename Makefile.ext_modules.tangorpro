@@ -20,8 +20,7 @@ ext_modules += lwis
 ext_modules += nfc
 ext_modules += power/reset
 ext_modules += touch/common
-ext_modules += touch/focaltech/ft3658
-ext_modules += touch/goodix
+ext_modules += touch/novatek/nt36xxx
 ext_modules += wlan/dhd43752p
 ext_modules += video/gchips
 ext_modules += ../devices/google/tangorpro/display/backlight
@@ -43,9 +42,7 @@ endif
 
 allmodules: $(ext_modules) $(install_uapi_headers_targets) depmod
 
-touch/focaltech/ft3658: | touch/common
-
-touch/goodix: | touch/common
+touch/novatek/nt36xxx: | touch/common
 
 aoc/alsa: | aoc
 
