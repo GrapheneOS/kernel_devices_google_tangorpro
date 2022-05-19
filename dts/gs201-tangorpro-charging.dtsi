@@ -6,12 +6,68 @@
  *
  */
 
+/ {
+	fragment@charging {
+		target-path = "/";
+		__overlay__ {
 
-&pca9468_dc {
-	pca9468,input-current-limit = <2500000>; /* 5A max */
+			google_charger: google,charger {
+				status = "okay";
+				compatible = "google,charger";
+				#cooling-cells = <2>;
+
+				google,chg-power-supply = "main-charger"; /* max77759-charger */
+				google,ext-power-supply = "dock";
+
+				google,bat-power-supply = "battery";
+				google,usb-power-supply = "usb";
+
+				google,fv-max-uv = <4400000>;
+
+				google,thermal-mitigation = <4000000 3000000 2000000 1000000 500000>;
+
+				/* b/170700459 thresholds, updated in b/191070950 */
+				google,bd-resume-abs-temp = <280>;
+				google,bd-resume-soc = <50>;
+				google,bd-resume-time = <14400>;  /* 4 hours */
+				google,bd-resume-temp = <290>;
+				google,bd-trigger-time = <21600>; /* 6 hours */
+				google,bd-trigger-temp = <350>;
+				google,bd-trigger-voltage = <4100000>;
+				google,bd-recharge-voltage = <4080000>;
+				google,bd-drainto-soc = <80>;
+				google,bd-recharge-soc = <79>;
+				/* Enable TEMP-DEFEND */
+				google,bd-temp-enable;
+				google,bd-temp-dry-run;
+
+				/* dock_defend */
+				google,dd-charge-stop-level = <90>;
+				google,dd-charge-start-level = <87>;
+				google,dd-state = <0>;    /* DOCK_DEFEND_ENABLED */
+				google,dd-settings = <1>; /* DOCK_DEFEND_USER_ENABLED */
+			};
+
+			google_dock: google,dock {
+				status = "okay";
+				compatible = "google,dock";
+				google,dc-psy-name = "dc";
+				google,psy-type-unknown;
+			};
+
+		};
+	};
 };
 
-&google_charger {
-	google,thermal-mitigation = <5000000 4000000 2500000 1000000>;
-	google,wlc-fcc-thermal-mitigation = <5000000 5000000 4000000 2500000 1000000>;
+&max77759_chg {
+	max77759,psy-name = "main-charger";
+	max77759,dc-psy-type-dock;
+
+	max77759,chg-term-voltage = <4350>;
+
+	max77759,dcin-is-dock;
+};
+
+&max77759tcpc {
+	chg-psy-name = "main-charger";
 };

@@ -7,12 +7,28 @@
  */
 
 &google_battery {
-	google,chg-battery-capacity = <4926>;
+	google,chg-battery-capacity = <7020>;
 };
 
 &max77759_fg {
 	/delete-property/ maxim,force-batt-id;
 	maxim,fg-data {
 		#include "gs201-tangorpro-battery-data.dtsi"
+	};
+};
+
+/ {
+	fragment@battery {
+		target-path = "/";
+		__overlay__ {
+			google_bms {
+				/* eeprom layout tracker */
+				google,lotr-version = <1>;
+
+				/* record over temperature time */
+				google,temp-record-thr = <300 350 400>;
+				google,soc-record-thr = <90 90 95>;
+			};
+		};
 	};
 };
