@@ -22,8 +22,7 @@ ext_modules += power/reset
 ext_modules += touch/common
 ext_modules += touch/focaltech/ft3658
 ext_modules += touch/goodix
-ext_modules += wlan/wcn6740/cnss2
-ext_modules += wlan/wcn6740/wlan/qcacld-3.0
+ext_modules += wlan/dhd43752p
 ext_modules += video/gchips
 
 # Add any modules which have their own UAPI headers to this list.  This will

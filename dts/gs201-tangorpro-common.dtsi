@@ -35,4 +35,5 @@
 #include "gs201-tangorpro-charging.dtsi"
 #include "gs201-tangorpro-wcharger.dtsi"
 #include "gs201-tangorpro-usb.dtsi"
+#include "gs201-tangorpro-wlan.dtsi"
 #include "google-base/gs201-pantah-pmic.dtsi"
