@@ -20,7 +20,7 @@ maxim,config {
 		>;
 		maxim,fg-params = /bits/ 16 <
 			/* 0x0036 */	0xf060	/* IAvgEmpty */
-			/* 0x002a */	0x043c	/* RelaxCFG */
+			/* 0x002a */	0x2038	/* RelaxCFG */
 			/* 0x0028 */	0x260e	/* LearnCFG */
 			/* 0x001D */	0x4217	/* Config */
 			/* 0x00BB */	0x0090	/* Config2 */
@@ -43,13 +43,13 @@ maxim,config {
 			/* 0x00B9 */	0x0012	/* Curve */
 			/* 0x002B */	0x3830	/* MiscCFG */
 			/* 0x0004 */	0x1900	/* AtRate */
-			/* 0x0049 */	0x2241	/* convgcfg */
+			/* 0x0049 */	0x2441	/* convgcfg */
 			/* 0x0029 */	0xc623	/* FilterCFG */
 			/* 0x003c */	0x2D00	/* TaskPeriod */
 		>;
 	};
 
-	/* 3125_1_101421_RC2_send.002.raw.model.ini.txt http://b/207607553#comment2 */
+	/* 3125_1_101421_RC2_send.002.raw.model.ini.txt http://b/231675666#comment9 */
 	maxim,cos-a1-1k {
 		maxim,batt-id-kohm = <1>;
 		maxim,model-version = <1>;
@@ -64,7 +64,7 @@ maxim,config {
 		>;
 		maxim,fg-params = /bits/ 16 <
 			/* 0x0036 */	0xf060	/* IAvgEmpty */
-			/* 0x002a */	0x043c	/* RelaxCFG */
+			/* 0x002a */	0x2038	/* RelaxCFG */
 			/* 0x0028 */	0x260e	/* LearnCFG */
 			/* 0x001D */	0x4217	/* Config */
 			/* 0x00BB */	0x0090	/* Config2 */
@@ -87,13 +87,13 @@ maxim,config {
 			/* 0x00B9 */	0x0012	/* Curve */
 			/* 0x002B */	0x3830	/* MiscCFG */
 			/* 0x0004 */	0x1900	/* AtRate */
-			/* 0x0049 */	0x2241	/* convgcfg */
+			/* 0x0049 */	0x2441	/* convgcfg */
 			/* 0x0029 */	0xc623	/* FilterCFG */
 			/* 0x003c */	0x2D00	/* TaskPeriod */
 		>;
 	};
 
-	/* 3126_1_101421_RC2_send.042.raw.model.ini.txt http://b/207607553#comment2 */
+	/* 3242_2_040722_RC2_send.048.raw.model.ini.txt http://b/231675666#comment9 */
 	maxim,hpt-a1-5k {
 		maxim,batt-id-kohm = <5>;
 		maxim,model-version = <1>;
@@ -108,30 +108,30 @@ maxim,config {
 		>;
 		maxim,fg-params = /bits/ 16 <
 			/* 0x0036 */	0xf060	/* IAvgEmpty */
-			/* 0x002a */	0x043c	/* RelaxCFG */
+			/* 0x002a */	0x2038	/* RelaxCFG */
 			/* 0x0028 */	0x260e	/* LearnCFG */
 			/* 0x001D */	0x4217	/* Config */
 			/* 0x00BB */	0x0090	/* Config2 */
 			/* 0x0013 */	0x5f00	/* FullSOCthr */
-			/* 0x0035 */	0x0de6	/* FullCAPRep */
-			/* 0x0018 */	0x0de6	/* DesignCap */
+			/* 0x0035 */	0x0de2	/* FullCAPRep */
+			/* 0x0018 */	0x0de2	/* DesignCap */
 			/* 0x0046 */	0x3200	/* dPacc */
-			/* 0x0045 */	0x0379	/* dQacc */
-			/* 0x0023 */	0x0de6	/* FullCAPNom */
+			/* 0x0045 */	0x0378	/* dQacc */
+			/* 0x0023 */	0x0de2	/* FullCAPNom */
 			/* 0x003A */	0xa05a	/* V_empty */
-			/* 0x0012 */	0x1000	/* QResidual00 */
-			/* 0x0022 */	0x0800	/* QResidual10 */
+			/* 0x0012 */	0x1780	/* QResidual00 */
+			/* 0x0022 */	0x0a80	/* QResidual10 */
 			/* 0x0032 */	0x0400	/* QResidual20 */
-			/* 0x0042 */	0x0280	/* QResidual30 */
-			/* 0x0038 */	0x0700	/* RCOMP0 */
-			/* 0x0039 */	0x0d02	/* TempCo */
+			/* 0x0042 */	0x0400	/* QResidual30 */
+			/* 0x0038 */	0x0760	/* RCOMP0 */
+			/* 0x0039 */	0x0a02	/* TempCo */
 			/* 0x001E */	0x0463	/* ICHGTerm */
 			/* 0x002C */	0xEE0C	/* TGain */
 			/* 0x002D */	0x1DF9	/* TOff */
 			/* 0x00B9 */	0x0012	/* Curve */
 			/* 0x002B */	0x3830	/* MiscCFG */
 			/* 0x0004 */	0x1900	/* AtRate */
-			/* 0x0049 */	0x2241	/* convgcfg */
+			/* 0x0049 */	0x2441	/* convgcfg */
 			/* 0x0029 */	0xc623	/* FilterCFG */
 			/* 0x003c */	0x2D00	/* TaskPeriod */
 		>;
@@ -152,7 +152,7 @@ maxim,config {
 		>;
 		maxim,fg-params = /bits/ 16 <
 			/* 0x0036 */	0xf060	/* IAvgEmpty */
-			/* 0x002a */	0x043c	/* RelaxCFG */
+			/* 0x002a */	0x2038	/* RelaxCFG */
 			/* 0x0028 */	0x260e	/* LearnCFG */
 			/* 0x001D */	0x4217	/* Config */
 			/* 0x00BB */	0x0090	/* Config2 */
@@ -175,7 +175,7 @@ maxim,config {
 			/* 0x00B9 */	0x0012	/* Curve */
 			/* 0x002B */	0x3830	/* MiscCFG */
 			/* 0x0004 */	0x1900	/* AtRate */
-			/* 0x0049 */	0x2241	/* convgcfg */
+			/* 0x0049 */	0x2441	/* convgcfg */
 			/* 0x0029 */	0xc623	/* FilterCFG */
 			/* 0x003c */	0x2D00	/* TaskPeriod */
 		>;
