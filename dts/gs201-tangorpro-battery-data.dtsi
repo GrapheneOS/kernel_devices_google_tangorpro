@@ -30,7 +30,7 @@ maxim,config {
 			/* 0x0046 */	0x3200	/* dPacc */
 			/* 0x0045 */	0x0373	/* dQacc */
 			/* 0x0023 */	0x0dcc	/* FullCAPNom */
-			/* 0x003A */	0xa05a	/* V_empty */
+			/* 0x003A */	0xa05f	/* V_empty */
 			/* 0x0012 */	0x0f00	/* QResidual00 */
 			/* 0x0022 */	0x0780	/* QResidual10 */
 			/* 0x0032 */	0x0400	/* QResidual20 */
@@ -74,7 +74,7 @@ maxim,config {
 			/* 0x0046 */	0x3200	/* dPacc */
 			/* 0x0045 */	0x0373	/* dQacc */
 			/* 0x0023 */	0x0dcc	/* FullCAPNom */
-			/* 0x003A */	0xa05a	/* V_empty */
+			/* 0x003A */	0xa05f	/* V_empty */
 			/* 0x0012 */	0x0f00	/* QResidual00 */
 			/* 0x0022 */	0x0780	/* QResidual10 */
 			/* 0x0032 */	0x0400	/* QResidual20 */
@@ -118,7 +118,7 @@ maxim,config {
 			/* 0x0046 */	0x3200	/* dPacc */
 			/* 0x0045 */	0x0378	/* dQacc */
 			/* 0x0023 */	0x0de2	/* FullCAPNom */
-			/* 0x003A */	0xa05a	/* V_empty */
+			/* 0x003A */	0xa05f	/* V_empty */
 			/* 0x0012 */	0x1780	/* QResidual00 */
 			/* 0x0022 */	0x0a80	/* QResidual10 */
 			/* 0x0032 */	0x0400	/* QResidual20 */
@@ -162,7 +162,7 @@ maxim,config {
 			/* 0x0046 */	0x3200	/* dPacc */
 			/* 0x0045 */	0x0373	/* dQacc */
 			/* 0x0023 */	0x0dcc	/* FullCAPNom */
-			/* 0x003A */	0xa05a	/* V_empty */
+			/* 0x003A */	0xa05f	/* V_empty */
 			/* 0x0012 */	0x0f00	/* QResidual00 */
 			/* 0x0022 */	0x0780	/* QResidual10 */
 			/* 0x0032 */	0x0400	/* QResidual20 */
