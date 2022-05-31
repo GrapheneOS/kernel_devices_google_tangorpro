@@ -53,9 +53,35 @@
 				compatible = "google,dock";
 				google,dc-psy-name = "dc";
 				google,psy-type-unknown;
+				pinctrl-names = "default";
+				pinctrl-0 = <&pogo_accessory_detect &pogo_vout_sw_en>;
+				interrupt-parent = <&gpa8>;
+				google,pogo-accessory-detect = <&gpa8 2 GPIO_ACTIVE_LOW>;
 			};
 
 		};
+	};
+};
+
+&pinctrl_1 {
+	/* XIENT_14 POGO_ACCESSORY_DETECT */
+	pogo_accessory_detect: pogo-accessory-detect {
+		samsung,pins = "gpa8-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+	};
+};
+
+&pinctrl_4 {
+	/* XAPC_GPIO1 POGO_VOUT_SW_EN */
+	pogo_vout_sw_en: pogo-vout-sw-en {
+		samsung,pins = "gpp0-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT0>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
 	};
 };
 
