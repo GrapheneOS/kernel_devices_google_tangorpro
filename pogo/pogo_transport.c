@@ -24,10 +24,8 @@
 
 #define POGO_TIMEOUT_MS 10000
 #define POGO_USB_CAPABLE_THRESHOLD_UV 10500000
-#define POGO_USB_RETRY_THRESHOLD_UV 7000000
 #define POGO_USB_RETRY_COUNT 10
-#define POGO_USB_RETRY_INTEREVAL_MS 100
-#define POGO_LIKELY_USB_NOT_CAPABLE_MS 250
+#define POGO_USB_RETRY_INTEREVAL_MS 50
 #define POGO_PSY_DEBOUNCE_MS 50
 #define POGO_PSY_NRDY_RETRY_MS 500
 
@@ -76,14 +74,8 @@ struct pogo_transport {
 	struct kthread_worker *wq;
 	/* To read voltage at the pogo pins */
 	struct power_supply *pogo_psy;
-	/* Retry when voltage is less than POGO_USB_RETRY_THRESHOLD_UV */
+	/* Retry when voltage is less than POGO_USB_CAPABLE_THRESHOLD_UV */
 	unsigned int retry_count;
-	/*
-	 * To overcome transients, check once before not enabling pogo usb
-	 * when voltage is greater than POGO_USB_RETRY_THRESHOLD_UV and
-	 * lesser than POGO_USB_CAPABLE_THRESHOLD_UV.
-	 */
-	bool likely_usb_not_capable;
 	/* To signal userspace extcon observer */
 	struct extcon_dev *extcon;
 };
@@ -185,44 +177,28 @@ static void update_pogo_transport(struct kthread_work *work)
 
 	if (event->event_type == EVENT_DOCKING || event->event_type == EVENT_RETRY_READ_VOLTAGE) {
 		if (docked) {
-			dev_info(pogo_transport->dev, "%s voltage_now:%d\n", __func__,
-				 voltage_now.intval);
+			dev_info(pogo_transport->dev, "voltage_now:%d retry:%u\n",
+				 voltage_now.intval, pogo_transport->retry_count);
 			if (voltage_now.intval >= POGO_USB_CAPABLE_THRESHOLD_UV) {
 				pogo_transport->pogo_usb_capable = true;
 				update_extcon_dev(pogo_transport, true, true);
-			} else if (voltage_now.intval <= POGO_USB_RETRY_THRESHOLD_UV) {
-				dev_info(pogo_transport->dev, "%s retry count:%d\n", __func__,
-					 pogo_transport->retry_count);
+			} else {
+				/* retry every 50ms * 10 times */
 				if (pogo_transport->retry_count < POGO_USB_RETRY_COUNT) {
 					pogo_transport->retry_count++;
 					pogo_transport_event(pogo_transport,
 							     EVENT_RETRY_READ_VOLTAGE,
 							     POGO_USB_RETRY_INTEREVAL_MS);
-				}
-				goto free;
-			} else {
-				/*
-				 * Retry to avoid transients, ideally rise time should not
-				 * be more than 30ms.
-				 * Fuel gauge ADC which read's VBYP has a
-				 * sampling period of ~176ms.
-				 */
-				if (!pogo_transport->likely_usb_not_capable) {
-					pogo_transport_event(pogo_transport,
-							     EVENT_RETRY_READ_VOLTAGE,
-							     POGO_LIKELY_USB_NOT_CAPABLE_MS);
-					pogo_transport->likely_usb_not_capable = true;
-					goto free;
 				} else {
 					pogo_transport->pogo_usb_capable = false;
 					update_extcon_dev(pogo_transport, true, false);
 				}
+				goto free;
 			}
 		} else {
 			/* Clear retry count when un-docked */
 			pogo_transport->retry_count = 0;
 			pogo_transport->pogo_usb_capable = false;
-			pogo_transport->likely_usb_not_capable = false;
 			update_extcon_dev(pogo_transport, false, false);
 		}
 	}
