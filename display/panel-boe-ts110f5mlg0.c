@@ -34,6 +34,8 @@ static const struct exynos_dsi_cmd ts110f5mlg0_init_cmds[] = {
 	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),
 	/* 12 bits PWM */
 	EXYNOS_DSI_CMD_SEQ(0x00, 0x80),
+	/* PWM freq 3kHz */
+	EXYNOS_DSI_CMD_SEQ(0x08, 0x04),
 	/* APL_THD */
 	EXYNOS_DSI_CMD_SEQ(0x11, 0x02),
 	EXYNOS_DSI_CMD_SEQ(0x12, 0x80),
@@ -107,6 +109,7 @@ static const struct exynos_dsi_cmd ts110f5mlg0_init_cmds[] = {
 	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),
 	/* Write Primary & Secondary */
 	EXYNOS_DSI_CMD_SEQ(0xB9, 0x02),
+	EXYNOS_DSI_CMD_SEQ(0x51, 0x0F, 0xFF),
 	EXYNOS_DSI_CMD_SEQ(0x53, 0x24),
 	/* 0x01: CABC default UI Mode */
 	EXYNOS_DSI_CMD_SEQ(0x55, 0x01),
