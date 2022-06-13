@@ -35,3 +35,25 @@
 #include "gs201-tangorpro-usecases.dtsi"
 #include "gs201-tangorpro-wlan.dtsi"
 #include "google-base/gs201-pantah-pmic.dtsi"
+
+/ {
+	fragment@modemif {
+		target-path = "/";
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <1>;
+			cpif {
+				status = "disabled";
+			};
+		};
+	};
+};
+
+&pcie_0 {
+	status = "disabled";
+};
+
+&spi_5 {
+	status = "disabled";
+};
+
