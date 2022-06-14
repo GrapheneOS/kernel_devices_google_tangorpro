@@ -5,8 +5,6 @@
  * Copyright (c) 2022 Google, LLC
  *          https://www.google.com
  *
- *  cs35l41_l = top
- *  cs35l41_r = bottom
  */
 #include <dt-bindings/pinctrl/samsung.h>
 #include <dt-bindings/gpio/gpio.h>
@@ -16,25 +14,36 @@
 	aoc-board-cfg = "C10";
 };
 
+/*
+  cs35l41_1 ==> Left top
+  cs35l41_2 ==> Left bottom
+  cs35l41_3 ==> Right bottom
+  cs35l41_4 ==> Right top
+*/
+
 &dai_be_tdm0_rx {
 	codec {
-		sound-dai = <&cs35l41_l 0>,
-			<&cs35l41_r 0>;
+		sound-dai = <&cs35l41_1 0>,
+			<&cs35l41_2 0>,
+			<&cs35l41_3 0>,
+			<&cs35l41_4 0>;
 	};
 };
 
 &dai_be_tdm0_tx {
 	codec {
-		sound-dai = <&cs35l41_l 0>,
-			<&cs35l41_r 0>;
+		sound-dai = <&cs35l41_1 0>,
+			<&cs35l41_2 0>,
+			<&cs35l41_3 0>,
+			<&cs35l41_4 0>;
 	};
 };
 
 &aoc_snd_card {
 	clks {
 		sys {
-			sys@cs35l41_l {
-				comp = <&cs35l41_l>;
+			sys@cs35l41_1 {
+				comp = <&cs35l41_1>;
 				src = "BCLK";
 				/* clk id */
 				id = <0>;
@@ -46,8 +55,8 @@
 				out_mul = <1>;
 			};
 
-			sys@cs35l41_r {
-				comp = <&cs35l41_r>;
+			sys@cs35l41_2 {
+				comp = <&cs35l41_2>;
 				src = "BCLK";
 				/* clk id */
 				id = <0>;
@@ -58,20 +67,59 @@
 				/* out clk multiple */
 				out_mul = <1>;
 			};
+
+			sys@cs35l41_3 {
+				comp = <&cs35l41_3>;
+				src = "BCLK";
+				/* clk id */
+				id = <0>;
+				/* clk source */
+				srcid = <0>;
+				/* in clk multiple */
+				in_mul = <1>;
+				/* out clk multiple */
+				out_mul = <1>;
+			};
+
+			sys@cs35l41_4 {
+				comp = <&cs35l41_4>;
+				src = "BCLK";
+				/* clk id */
+				id = <0>;
+				/* clk source */
+				srcid = <0>;
+				/* in clk multiple */
+				in_mul = <1>;
+				/* out clk multiple */
+				out_mul = <1>;
+			};
+
 		};
 	};
 };
 
 /* GPIO_FAR_ALIVE */
 &pinctrl_1 {
-	cs35l41_l_irq: cs35l41-l-irq {
+	cs35l41_1_irq: cs35l41-1-irq {
 		samsung,pins = "gpa6-3"; /* XEINT_3 - AMP1_IRQ_L */
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 
-	cs35l41_r_irq: cs35l41-r-irq {
+	cs35l41_2_irq: cs35l41-2-irq {
 		samsung,pins = "gpa8-6"; /* XEINT_18 - AMP2_IRQ_L */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	cs35l41_3_irq: cs35l41-3-irq {
+		samsung,pins = "gpa6-2"; /* XEINT_2 (AMP3_IRQ_L) */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	cs35l41_4_irq: cs35l41-4-irq {
+		samsung,pins = "gpa8-4"; /* XEINT_16 (AMP4_IRQ_L) */
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
@@ -100,8 +148,34 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 
-	cs35l41_l_rst: cs35l41-l-rst {
+	cs35l41_1_rst: cs35l41-1-rst {
 		samsung,pins = "gpp17-1"; /* XAPC_VSYNC8 - AMP1_RESET_L */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	cs35l41_3_rst: cs35l41-3-rst {
+		samsung,pins = "gpp2-2"; /* XAPC_USI1_RTSn_DI (AMP3_RESET_L) */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	cs35l41_cs3: cs35l41-cs3 {
+		samsung,pins = "gpp8-3"; /* XAPC_USI4_CTSn_CSn (AUDIO_AMP3_SPI_CS_L) */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	cs35l41_cs4: cs35l41-cs4 {
+		samsung,pins = "gpp10-3"; /* XAPC_USI5_CTSn_CSn (AUDIO_AMP4_SPI_CS_L) */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	cs35l41_4_rst: cs35l41-4-rst {
+		samsung,pins = "gpp12-3"; /* XAPC_USI6_CTSn_CSn (AMP4_RESET_L) */
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
@@ -117,7 +191,7 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 
-	cs35l41_r_rst: cs35l41-r-rst {
+	cs35l41_2_rst: cs35l41-2-rst {
 		samsung,pins = "gpp25-2"; /* XAPC_USI13_RTSn_DI - AMP2_RESET_L */
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
@@ -138,11 +212,12 @@
 	status = "okay";
 
 	pinctrl-names = "default";
-	pinctrl-0 = <&spi7_bus &spi7_cs_func &cs35l41_cs2
+	pinctrl-0 = <&spi7_bus &spi7_cs_func &cs35l41_cs2 &cs35l41_cs3 &cs35l41_cs4
 		     &cs35l41_miso &cs35l41_mosi &cs35l41_clk>;
-	cs-gpios = <&gpp14 3 GPIO_ACTIVE_HIGH>, <&gpp22 1 GPIO_ACTIVE_HIGH>;
+	cs-gpios = <&gpp14 3 GPIO_ACTIVE_HIGH>, <&gpp22 1 GPIO_ACTIVE_HIGH>,
+		   <&gpp8 3 GPIO_ACTIVE_HIGH>, <&gpp10 3 GPIO_ACTIVE_HIGH>;
 
-	cs35l41_l: cs35l41@0 {
+	cs35l41_1: cs35l41@0 {
 		#sound-dai-cells = <1>;
 		compatible = "cirrus,cs35l41";
 		spi-max-frequency = <25000000>;
@@ -151,7 +226,7 @@
 		status = "okay";
 
 		pinctrl-names = "default";
-		pinctrl-0 = <&cs35l41_l_irq &cs35l41_l_rst>;
+		pinctrl-0 = <&cs35l41_1_irq &cs35l41_1_rst>;
 
 		interrupt-parent = <&gpa6>;
 		interrupts = <3 0 0>;
@@ -164,12 +239,11 @@
 		cirrus,boost-peak-milliamp = <3500>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <30>;
+		cirrus,hw-noise-gate-select = <63>;
 
 		cirrus,asp-sdout-hiz = <3>;
 		cirrus,tuning-has-prefix;
 		cirrus,left-channel-amp;
-		cirrus,hw-noise-gate-select = <63>;
-		cirrus,hibernate-enable;
 
 		cirrus,gpio-config2 {
 			cirrus,gpio-src-select = <0x5>;
@@ -185,9 +259,9 @@
 	};
 
 
-	cs35l41_r: cs35l41@1 {
+	cs35l41_2: cs35l41@1 {
 		#sound-dai-cells = <1>;
-		sound-name-prefix = "R";
+		sound-name-prefix = "L2";
 		compatible = "cirrus,cs35l41";
 		spi-max-frequency = <25000000>;
 		reg = <1>;
@@ -195,7 +269,7 @@
 		status = "okay";
 
 		pinctrl-names = "default";
-		pinctrl-0 = <&cs35l41_r_irq &cs35l41_r_rst>;
+		pinctrl-0 = <&cs35l41_2_irq &cs35l41_2_rst>;
 
 		interrupt-parent = <&gpa8>;
 		interrupts = <6 0 0>;
@@ -208,12 +282,11 @@
 		cirrus,boost-peak-milliamp = <3500>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <30>;
+		cirrus,hw-noise-gate-select = <63>;
 
 		cirrus,asp-sdout-hiz = <3>;
 		cirrus,tuning-has-prefix;
 		cirrus,left-channel-amp;
-		cirrus,hw-noise-gate-select = <63>;
-		cirrus,hibernate-enable;
 
 		cirrus,gpio-config2 {
 			cirrus,gpio-src-select = <0x5>;
@@ -227,4 +300,91 @@
 			samsung,spi-chip-select-mode = <1>;
 		};
 	};
+
+	cs35l41_3: cs35l41@2 {
+		#sound-dai-cells = <1>;
+		sound-name-prefix = "R2";
+		compatible = "cirrus,cs35l41";
+		spi-max-frequency = <25000000>;
+		reg = <2>;
+
+		status = "okay";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cs35l41_3_irq &cs35l41_3_rst>;
+
+		interrupt-parent = <&gpa6>;
+		interrupts = <2 0 0>;
+
+		reset-gpios = <&gpp2 2 0>;
+
+		VA-supply = <&s_bucka_reg>;
+		VP-supply = <&V_SYS_dummy>;
+
+		cirrus,boost-peak-milliamp = <3500>;
+		cirrus,boost-ind-nanohenry = <1000>;
+		cirrus,boost-cap-microfarad = <30>;
+		cirrus,hw-noise-gate-select = <63>;
+
+		cirrus,asp-sdout-hiz = <3>;
+		cirrus,tuning-has-prefix;
+		cirrus,right-channel-amp;
+
+		cirrus,gpio-config2 {
+			cirrus,gpio-src-select = <0x5>;
+			cirrus,gpio-output-enable;
+		};
+
+		controller-data {
+			cs-gpio = <&gpp8 3 GPIO_ACTIVE_HIGH>;
+			samsung,spi-feedback-delay = <1>;
+			/* SET SPI CS CONTROL TO AUTOMATIC */
+			samsung,spi-chip-select-mode = <1>;
+		};
+	};
+
+	cs35l41_4: cs35l41@3 {
+		#sound-dai-cells = <1>;
+		sound-name-prefix = "R";
+		compatible = "cirrus,cs35l41";
+		spi-max-frequency = <25000000>;
+		reg = <3>;
+
+		status = "okay";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cs35l41_4_irq &cs35l41_4_rst>;
+
+		interrupt-parent = <&gpa8>;
+		interrupts = <4 0 0>;
+
+		reset-gpios = <&gpp12 3 0>;
+
+		VA-supply = <&s_bucka_reg>;
+		VP-supply = <&V_SYS_dummy>;
+
+		cirrus,boost-peak-milliamp = <3500>;
+		cirrus,boost-ind-nanohenry = <1000>;
+		cirrus,boost-cap-microfarad = <30>;
+		cirrus,hw-noise-gate-select = <63>;
+
+		cirrus,asp-sdout-hiz = <3>;
+		cirrus,tuning-has-prefix;
+		cirrus,right-channel-amp;
+
+		cirrus,gpio-config2 {
+			cirrus,gpio-src-select = <0x5>;
+			cirrus,gpio-output-enable;
+		};
+
+		controller-data {
+			cs-gpio =<&gpp10 3 GPIO_ACTIVE_HIGH>;
+			samsung,spi-feedback-delay = <1>;
+			/* SET SPI CS CONTROL TO AUTOMATIC */
+			samsung,spi-chip-select-mode = <1>;
+		};
+	};
 };
+
+/* remove haptic audio codec */
+/delete-node/ &dai_be_haptic_rx_codec;
