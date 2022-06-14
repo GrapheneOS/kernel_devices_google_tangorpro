@@ -87,6 +87,7 @@ logbuffer.ko
 lp855x_bl.ko
 lzo-rle.ko
 lzo.ko
+leds-pwm.ko
 mailbox-wc.ko
 max1720x-battery.ko
 max20339.ko
@@ -120,6 +121,7 @@ pkvm-s2mpu.ko
 pl330.ko
 pmic_class.ko
 power_stats.ko
+pwm-samsung.ko
 rt4539_bl.ko
 rtc-s2mpg12.ko
 s2mpg12-key.ko
