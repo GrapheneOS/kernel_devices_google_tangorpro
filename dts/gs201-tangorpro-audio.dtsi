@@ -11,7 +11,9 @@
 #include <dt-bindings/sound/google-aoc.h>
 
 &aoc {
-	aoc-board-cfg = "C10";
+	aoc-board-cfg = "T6P";
+	aoc-board-id = <0x20901>;
+	aoc-board-rev = <0x10000>;
 };
 
 /*
