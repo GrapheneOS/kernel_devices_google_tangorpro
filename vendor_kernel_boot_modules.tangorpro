@@ -120,6 +120,7 @@ pixel-em.ko
 pkvm-s2mpu.ko
 pl330.ko
 pmic_class.ko
+pogo_transport.ko
 power_stats.ko
 pwm-samsung.ko
 rt4539_bl.ko
