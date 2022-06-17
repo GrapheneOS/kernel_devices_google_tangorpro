@@ -21,6 +21,13 @@
 	fragment@battery {
 		target-path = "/";
 		__overlay__ {
+			google_battery: google,battery {
+				google,ttf-temp-idx= <2>;
+				google,ttf-adapter = <1980>;
+				google,ttf-soc-table =  <83 89  93  96  98  100>;
+				google,ttf-elap-table = <76 105 173 300 390 165>;
+				google,ttf-tier-table = <0 80 100>;
+			};
 			google_bms {
 				/* eeprom layout tracker */
 				google,lotr-version = <1>;
