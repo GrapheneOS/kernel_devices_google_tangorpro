@@ -65,6 +65,7 @@ google-bms.ko
 google-charger.ko
 google-cpm.ko
 google_bcl.ko
+google_dock.ko
 governor_memlat.ko
 gs-chipid.ko
 gs_acpm.ko
