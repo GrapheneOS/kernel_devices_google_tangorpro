@@ -34,7 +34,8 @@
 	novatek,pen-support;
 	novatek,wgp-stylus;
 
-	//goog,tbn-enable;
+	goog,default-grip-disabled;
+	goog,default-palm-disabled;
 	//goog,offload-enable;
 	goog,v4l2-enable;
 	goog,touch_offload_id = /bits/ 8 <'t' '6' '0' '0'>;
