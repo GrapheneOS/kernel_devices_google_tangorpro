@@ -36,6 +36,7 @@
 #include "google-base/gs201-pantah-pmic.dtsi"
 #include "gs201-tangorpro-led.dtsi"
 #include "gs201-tangorpro-fingerprint.dtsi"
+#include "gs201-pogo-transport.dtsi"
 
 / {
 	fragment@modemif {
