@@ -60,6 +60,8 @@ struct pogo_transport {
 	int pogo_irq;
 	int pogo_data_mux_gpio;
 	int pogo_ovp_en_gpio;
+	/* Raw value of the active state. Set to 1 when pogo_ovp_en is ACTIVE_HIGH */
+	bool pogo_ovp_en_active_state;
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *susp_usb_state;
 	struct pinctrl_state *susp_pogo_state;
@@ -275,8 +277,14 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 	logbuffer_log(pogo_transport->log, "Pogo threaded irq running");
 
 	if (pogo_transport->pogo_ovp_en_gpio >= 0) {
+		/*
+		 * set to active state if pogo_gpio (ACTIVE_LOW) is in active state (0)
+		 * set to disable state if pogo_gpio (ACTIVE_LOW) is in disable state (1)
+		 */
 		gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
-					!gpio_get_value(pogo_transport->pogo_gpio));
+					gpio_get_value(pogo_transport->pogo_gpio) ?
+					!pogo_transport->pogo_ovp_en_active_state :
+					pogo_transport->pogo_ovp_en_active_state);
 	}
 
 	/*
@@ -309,6 +317,7 @@ static irqreturn_t pogo_isr(int irq, void *dev_id)
 
 static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
 {
+	enum of_gpio_flags flags;
 	int ret;
 
 	pogo_transport->pogo_gpio = of_get_named_gpio(pogo_transport->dev->of_node,
@@ -413,8 +422,8 @@ static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
 		goto exit;
 	}
 
-	pogo_transport->pogo_ovp_en_gpio = of_get_named_gpio(pogo_transport->dev->of_node,
-							     "pogo-ovp-en", 0);
+	pogo_transport->pogo_ovp_en_gpio = of_get_named_gpio_flags(pogo_transport->dev->of_node,
+								   "pogo-ovp-en", 0, &flags);
 	if (pogo_transport->pogo_ovp_en_gpio < 0) {
 		dev_err(pogo_transport->dev,
 			"Pogo ovp en gpio not found. ret:%d\n",
@@ -422,6 +431,8 @@ static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
 		ret = pogo_transport->pogo_ovp_en_gpio;
 		goto disable_irq;
 	}
+
+	pogo_transport->pogo_ovp_en_active_state = (flags & OF_GPIO_ACTIVE_LOW) ? 0 : 1;
 
 	ret = devm_gpio_request(pogo_transport->dev, pogo_transport->pogo_ovp_en_gpio,
 				"pogo-ovp-en");
@@ -431,7 +442,9 @@ static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
 		goto disable_irq;
 	}
 
-	ret = gpio_direction_output(pogo_transport->pogo_ovp_en_gpio, 0);
+	/* Default disable pogo ovp. Set to disable state for pogo_ovp_en */
+	ret = gpio_direction_output(pogo_transport->pogo_ovp_en_gpio,
+				    !pogo_transport->pogo_ovp_en_active_state);
 	if (ret) {
 		dev_err(pogo_transport->dev, "failed set pogo-ovp-en as output, ret:%d\n",
 			ret);
