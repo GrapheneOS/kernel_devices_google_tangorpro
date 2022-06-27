@@ -140,6 +140,7 @@ static int rt4539_backlight_register(struct rt4539 *rt)
 static int rt4539_configure(struct rt4539 *rt)
 {
 	int ret;
+	u8 mask, data;
 
 	/* disable LED outputs */
 	ret = rt4539_update_field(rt, RT4539_REG0B,
@@ -165,18 +166,13 @@ static int rt4539_configure(struct rt4539 *rt)
 	if (ret < 0)
 		return ret;
 
-	/* set mapping mode */
-	ret = rt4539_update_field(rt, RT4539_REG03,
-		RT4539_REG03_ILED_MAPPING_MASK,
-		rt->pdata->exponential_mapping
-			? (1 << RT4539_REG03_ILED_MAPPING_SHIFT) : 0);
-	if (ret < 0)
-		return ret;
-
-	/* set bit selection */
-	ret = rt4539_update_field(rt, RT4539_REG03,
-		RT4539_REG03_BIT_SELECTION_MASK,
-		rt->pdata->bit_selection);
+	/* set mapping mode and bit selection */
+	mask = RT4539_REG03_ILED_MAPPING_MASK | RT4539_REG03_BIT_SELECTION_MASK;
+	data = (rt->pdata->exponential_mapping
+			? (1 << RT4539_REG03_ILED_MAPPING_SHIFT) : 0) &
+			RT4539_REG03_ILED_MAPPING_MASK;
+	data |= rt->pdata->bit_selection & RT4539_REG03_BIT_SELECTION_MASK;
+	ret = rt4539_update_field(rt, RT4539_REG03, mask, data);
 	if (ret < 0)
 		return ret;
 
@@ -192,42 +188,31 @@ static int rt4539_configure(struct rt4539 *rt)
 	if (ret < 0)
 		return ret;
 
-	ret = rt4539_update_field(rt, RT4539_REG09,
-		RT4539_REG09_PFM_ENABLE_MASK,
-		rt->pdata->pfm_enable);
+	/* set PFM enable and LED unused check */
+	mask = RT4539_REG09_PFM_ENABLE_MASK | RT4539_REG09_LED_UNUSED_CHECK_MASK;
+	data = rt->pdata->pfm_enable & RT4539_REG09_PFM_ENABLE_MASK;
+	data |= (rt->pdata->led_unused_check ?
+		(1 << RT4539_REG09_LED_UNUSED_CHECK_SHIFT) : 0) &
+		RT4539_REG09_LED_UNUSED_CHECK_MASK;
+	ret = rt4539_update_field(rt, RT4539_REG09, mask, data);
 	if (ret < 0)
 		return ret;
 
-	ret = rt4539_update_field(rt, RT4539_REG09,
-		RT4539_REG09_LED_UNUSED_CHECK_MASK,
-		rt->pdata->led_unused_check ?
-		(1 << RT4539_REG09_LED_UNUSED_CHECK_SHIFT) : 0);
+	/* set boot OVP and LED short protect */
+	mask = RT4539_REG0A_BOOST_OVP_MASK | RT4539_REG0A_LED_SHORT_PROTECT_MASK;
+	data = rt->pdata->boost_ovp_selection & RT4539_REG0A_BOOST_OVP_MASK;
+	data |= (rt->pdata->led_short_protection ?
+		(1 << RT4539_REG0A_LED_SHORT_PROTECT_SHIFT) : 0) &
+		RT4539_REG0A_LED_SHORT_PROTECT_MASK;
+	ret = rt4539_update_field(rt, RT4539_REG0A, mask, data);
 	if (ret < 0)
 		return ret;
 
-	ret = rt4539_update_field(rt, RT4539_REG0A,
-		RT4539_REG0A_BOOST_OVP_MASK,
-		rt->pdata->boost_ovp_selection);
-	if (ret < 0)
-		return ret;
-
-	ret = rt4539_update_field(rt, RT4539_REG0A,
-		RT4539_REG0A_LED_SHORT_PROTECT_MASK,
-		rt->pdata->led_short_protection ?
-		(1 << RT4539_REG0A_LED_SHORT_PROTECT_SHIFT) : 0);
-	if (ret < 0)
-		return ret;
-
-	/* set LED enable bits */
-	ret = rt4539_update_field(rt, RT4539_REG0B,
-		RT4539_REG0B_LED_EN_MASK,
-		rt->pdata->enabled_leds);
-	if (ret < 0)
-		return ret;
-
-	/* enable LED outputs */
-	ret = rt4539_update_field(rt, RT4539_REG0B,
-		RT4539_REG0B_BL_EN_MASK, 1 << RT4539_REG0B_BL_EN_SHIFT);
+	/* set LED enable bits and enable LED outputs */
+	mask = RT4539_REG0B_LED_EN_MASK | RT4539_REG0B_BL_EN_MASK;
+	data = rt->pdata->enabled_leds & RT4539_REG0B_LED_EN_MASK;
+	data |= (1 << RT4539_REG0B_BL_EN_SHIFT) & RT4539_REG0B_BL_EN_MASK;
+	ret = rt4539_update_field(rt, RT4539_REG0B, mask, data);
 
 	return ret;
 }
