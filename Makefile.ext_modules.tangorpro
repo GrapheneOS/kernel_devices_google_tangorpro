@@ -24,6 +24,7 @@ ext_modules += video/gchips
 ext_modules += ../devices/google/tangorpro/display/backlight
 ext_modules += ../devices/google/tangorpro/display
 ext_modules += ../devices/google/tangorpro/pogo
+ext_modules += fingerprint/fpc
 
 # Add any modules which have their own UAPI headers to this list.  This will
 # cause the build to run the module makefile with headers_install target.
