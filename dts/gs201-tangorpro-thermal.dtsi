@@ -13,7 +13,7 @@
 		gs201_tm1: gs201_spmic_tm1 {
 			compatible = "google,s2mpg13-spmic-thermal";
 			#thermal-sensor-cells = <1>;
-			adc_chan_en = /bits/ 8 <0xFF>;
+			adc_chan_en = /bits/ 8 <0x3F>;
 		};
 	};
 };
@@ -46,7 +46,7 @@
 			};
 		};
 	};
-	qi_therm {
+	charger_skin_therm {
 		polling-delay-passive = <0>;
 		polling-delay = <0>;
 		thermal-governor = "user_space";
@@ -98,7 +98,7 @@
 			};
 		};
 	};
-	batt_therm_sidekey {
+	therm_6 {
 		polling-delay-passive = <0>;
 		polling-delay = <0>;
 		thermal-governor = "user_space";
@@ -111,7 +111,7 @@
 			};
 		};
 	};
-	gnss_tcxo_therm {
+	therm_7 {
 		polling-delay-passive = <0>;
 		polling-delay = <0>;
 		thermal-governor = "user_space";
