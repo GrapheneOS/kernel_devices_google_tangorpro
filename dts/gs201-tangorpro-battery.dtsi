@@ -29,6 +29,10 @@
 				google,ttf-tier-table = <0 80 100>;
 			};
 			google_bms {
+				nvmem-names = "7-00500";
+				/* pack eeprom is available only with P20+ batteries */
+				google,bee-name = "7-00500";
+
 				/* eeprom layout tracker */
 				google,lotr-version = <1>;
 
