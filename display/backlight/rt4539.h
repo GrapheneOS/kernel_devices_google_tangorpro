@@ -36,7 +36,7 @@ struct rt4539_platform_data {
 	u8 current_max;
 	u8 brightness_control;
 	u8 enabled_leds;
-	u8 initial_brightness;
+	u16 initial_brightness;
 	u8 boost_ovp_selection;
 	bool led_short_protection;
 	bool exponential_mapping;
