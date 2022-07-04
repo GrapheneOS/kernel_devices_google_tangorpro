@@ -45,3 +45,44 @@
 	regulator-always-on;
 	regulator-initial-mode = <SEC_OPMODE_ON>;
 };
+
+/* No modem on Tangor Pro */
+/* replace VSYS_PWR_MMWAVE to L1M_ALIVE */
+&ch1 {
+	rail-name = "LDO1M";
+};
+
+/* replace VSYS_PWR_MODEM to L2M_ALIVE */
+&ch2 {
+	rail-name = "LDO2M";
+};
+
+/* replace VSYS_PWR_RFFE to S9M_LLDO3 */
+&ch3 {
+	rail-name = "BUCK9M";
+};
+
+&m_ext4_rail {
+	schematic-name = "VSEN_C1_NC";
+	subsys-name = "Spare";
+};
+
+&m_ext5_rail {
+	schematic-name = "VSEN_C2_NC";
+	subsys-name = "Spare";
+};
+
+&m_ext6_rail {
+	schematic-name = "VSEN_C3_NC";
+	subsys-name = "Spare";
+};
+
+/* replace VSYS_PWR_CAM to L21S_VDD2L_MEM */
+&ch15 {
+	rail-name = "LDO21S";
+};
+
+&s_ext6_rail {
+	schematic-name = "VSEN_C6_NC";
+	subsys-name = "Spare";
+};

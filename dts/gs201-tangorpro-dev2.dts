@@ -9,7 +9,6 @@
 /plugin/;
 
 #include "gs201-tangorpro-common.dtsi"
-#include "google-base/gs201-pantah-pmic-odpm-1.dtsi"
 
 / {
 	board_id = <0x30701>;

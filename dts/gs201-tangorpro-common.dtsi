@@ -18,6 +18,8 @@
 #include "google-base/gs201-cloudripper-sbbm.dtsi"
 #include "google-base/gs201-cloudripper-wlan.dtsi"
 
+#include "google-base/gs201-pantah-pmic.dtsi"
+
 #include "google-base/gs201-ravenclaw-uwb.dtsi"
 
 #include "gs201-tangorpro-camera-pmic.dtsi"
@@ -33,7 +35,6 @@
 #include "gs201-tangorpro-usb.dtsi"
 #include "gs201-tangorpro-usecases.dtsi"
 #include "gs201-tangorpro-wlan.dtsi"
-#include "google-base/gs201-pantah-pmic.dtsi"
 #include "gs201-tangorpro-led.dtsi"
 #include "gs201-tangorpro-fingerprint.dtsi"
 #include "gs201-pogo-transport.dtsi"
