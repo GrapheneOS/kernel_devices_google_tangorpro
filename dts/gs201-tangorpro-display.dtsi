@@ -43,6 +43,9 @@
 
 		bit-selection = /bits/ 8 <12>;
 
+		/* 20% initial brightness */
+		initial-brightness = /bits/ 16 <819>;
+
 		/* DC Mode */
 		dimming-mode = /bits/ 8 <0x04>;
 
