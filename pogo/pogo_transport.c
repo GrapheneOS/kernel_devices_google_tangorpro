@@ -5,10 +5,11 @@
  * Pogo management driver
  */
 
-#include <linux/i2c.h>
+#include <linux/delay.h>
 #include <linux/extcon.h>
 #include <linux/extcon-provider.h>
 #include <linux/interrupt.h>
+#include <linux/i2c.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -40,6 +41,9 @@ enum pogo_event_type {
 	EVENT_RETRY_READ_VOLTAGE,
 	/* Reported when data over USB-C is enabled/disabled */
 	EVENT_DATA_ACTIVE_CHANGED,
+	/* Hub operation; workable only if hub_embedded is true */
+	EVENT_ENABLE_HUB,
+	EVENT_DISABLE_HUB,
 };
 
 static bool modparam_force_usb;
@@ -59,18 +63,25 @@ struct pogo_transport {
 	int pogo_gpio;
 	int pogo_irq;
 	int pogo_data_mux_gpio;
+	int pogo_hub_sel_gpio;
+	int pogo_hub_reset_gpio;
 	int pogo_ovp_en_gpio;
 	/* Raw value of the active state. Set to 1 when pogo_ovp_en is ACTIVE_HIGH */
 	bool pogo_ovp_en_active_state;
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *susp_usb_state;
 	struct pinctrl_state *susp_pogo_state;
+	struct pinctrl_state *hub_state;
 	/* When true, Usb data active over pogo pins. */
 	bool pogo_usb_active;
 	/* When true, Pogo connection is capable of usb transport. */
 	bool pogo_usb_capable;
 	/* When true, both pogo and usb-c have equal priority. */
 	bool equal_priority;
+	/* When true, USB data is routed to the hub. */
+	bool pogo_hub_active;
+	/* When true, the board has a hub embedded in the pogo system. */
+	bool hub_embedded;
 	/* When true, pogo takes higher priority */
 	bool force_pogo;
 	struct kthread_worker *wq;
@@ -116,6 +127,14 @@ static void switch_to_usbc_locked(struct pogo_transport *pogo_transport)
 		pogo_transport->pogo_usb_active = false;
 	}
 
+	if (pogo_transport->hub_embedded) {
+		/* USB_MUX_HUB_SEL set to 0 to bypass the hub */
+		gpio_set_value(pogo_transport->pogo_hub_sel_gpio, 0);
+		logbuffer_log(pogo_transport->log, "POGO: hub-mux:%d",
+			      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
+		pogo_transport->pogo_hub_active = false;
+	}
+
 	ret = pinctrl_select_state(pogo_transport->pinctrl, pogo_transport->susp_usb_state);
 	if (ret)
 		dev_err(pogo_transport->dev, "failed to select suspend in usb state ret:%d\n", ret);
@@ -143,6 +162,14 @@ static void switch_to_pogo_locked(struct pogo_transport *pogo_transport)
 		chip->data_active = false;
 	}
 
+	if (pogo_transport->hub_embedded) {
+		/* USB_MUX_HUB_SEL set to 0 to bypass the hub */
+		gpio_set_value(pogo_transport->pogo_hub_sel_gpio, 0);
+		logbuffer_log(pogo_transport->log, "POGO: hub-mux:%d",
+			      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
+		pogo_transport->pogo_hub_active = false;
+	}
+
 	ret = pinctrl_select_state(pogo_transport->pinctrl, pogo_transport->susp_pogo_state);
 	if (ret)
 		dev_err(pogo_transport->dev, "failed to select suspend in pogo state ret:%d\n",
@@ -155,6 +182,63 @@ static void switch_to_pogo_locked(struct pogo_transport *pogo_transport)
 	logbuffer_log(pogo_transport->log, "%s: %s turning on host for Pogo", __func__, ret < 0 ?
 		      "Failed" : "Succeeded");
 	pogo_transport->pogo_usb_active = true;
+}
+
+static void switch_to_hub_locked(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+	int ret;
+
+	/*
+	 * TODO: set alt_path_active; re-design this function for
+	 * 1. usb-c only (hub disabled)
+	 * 2. pogo only (hub disabled)
+	 * 3. hub enabled for both usb-c host and pogo host
+	 */
+	data_alt_path_active(chip, true);
+
+	/* if usb-c is active, disable it */
+	if (chip->data_active) {
+		ret = extcon_set_state_sync(chip->extcon, chip->active_data_role == TYPEC_HOST ?
+					    EXTCON_USB_HOST : EXTCON_USB, 0);
+
+		logbuffer_log(pogo_transport->log, "%s turning off %s", ret < 0 ?
+			      "Failed" : "Succeeded", chip->active_data_role == TYPEC_HOST ?
+			      "Host" : "Device");
+		chip->data_active = false;
+	}
+
+	/* if pogo-usb is active, disable it */
+	if (pogo_transport->pogo_usb_active) {
+		ret = extcon_set_state_sync(chip->extcon, EXTCON_USB_HOST, 0);
+		logbuffer_log(pogo_transport->log, "%s: %s turning off host for Pogo", __func__,
+			      ret < 0 ? "Failed" : "Succeeded");
+		pogo_transport->pogo_usb_active = false;
+	}
+
+	ret = pinctrl_select_state(pogo_transport->pinctrl, pogo_transport->hub_state);
+	if (ret)
+		dev_err(pogo_transport->dev, "failed to select hub state ret:%d\n", ret);
+
+	/* USB_MUX_POGO_SEL set to 0 to direct usb-c to AP or hub */
+	gpio_set_value(pogo_transport->pogo_data_mux_gpio, 0);
+
+	/* USB_MUX_HUB_SEL set to 1 to switch the path to hub */
+	gpio_set_value(pogo_transport->pogo_hub_sel_gpio, 1);
+	logbuffer_log(pogo_transport->log, "POGO: data-mux:%d hub-mux:%d",
+		      gpio_get_value(pogo_transport->pogo_data_mux_gpio),
+		      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
+
+	/* wait for the host mode to be turned off completely */
+	mdelay(60);
+
+	ret = extcon_set_state_sync(chip->extcon, EXTCON_USB_HOST, 1);
+	logbuffer_log(pogo_transport->log, "%s: %s turning on host for hub", __func__, ret < 0 ?
+		      "Failed" : "Succeeded");
+
+	/* TODO: re-design the flags */
+	pogo_transport->pogo_usb_active = true;
+	pogo_transport->pogo_hub_active = true;
 }
 
 static void update_pogo_transport(struct kthread_work *work)
@@ -221,21 +305,45 @@ static void update_pogo_transport(struct kthread_work *work)
 		goto exit;
 	}
 
-	if (pogo_transport->pogo_usb_capable && !pogo_transport->pogo_usb_active) {
-		/*
-		 * Pogo treated with same priority as USB-C, hence skip enabling
-		 * pogo usb as USB-C is active.
-		 */
-		if (chip->data_active && pogo_transport->equal_priority) {
-			dev_info(pogo_transport->dev, "usb active, skipping enable pogo usb\n");
-			goto exit;
+	switch (event->event_type) {
+	case EVENT_DOCKING:
+	case EVENT_RETRY_READ_VOLTAGE:
+		if (pogo_transport->pogo_usb_capable && !pogo_transport->pogo_usb_active) {
+			/*
+			 * Pogo treated with same priority as USB-C, hence skip enabling
+			 * pogo usb as USB-C is active.
+			 */
+			if (chip->data_active && pogo_transport->equal_priority) {
+				dev_info(pogo_transport->dev,
+					 "usb active, skipping enable pogo usb\n");
+				goto exit;
+			}
+			switch_to_pogo_locked(pogo_transport);
+		} else if (!pogo_transport->pogo_usb_capable && pogo_transport->pogo_usb_active) {
+			switch_to_usbc_locked(pogo_transport);
 		}
-		switch_to_pogo_locked(pogo_transport);
-	} else if ((!pogo_transport->pogo_usb_capable ||
-		    event->event_type == EVENT_MOVE_DATA_TO_USB) &&
-		   pogo_transport->pogo_usb_active) {
-		switch_to_usbc_locked(pogo_transport);
+		break;
+	case EVENT_MOVE_DATA_TO_USB:
+		if (pogo_transport->pogo_usb_active)
+			switch_to_usbc_locked(pogo_transport);
+		break;
+	case EVENT_MOVE_DATA_TO_POGO:
+		/* Currently this event is bundled to force_pogo. This case is unreachable. */
+		break;
+	case EVENT_ENABLE_HUB:
+		pogo_transport->pogo_usb_capable = true;
+		switch_to_hub_locked(pogo_transport);
+		break;
+	case EVENT_DISABLE_HUB:
+		if (pogo_transport->pogo_usb_capable)
+			switch_to_pogo_locked(pogo_transport);
+		else
+			switch_to_usbc_locked(pogo_transport);
+		break;
+	default:
+		break;
 	}
+
 exit:
 	mutex_unlock(&chip->data_path_lock);
 	kobject_uevent(&pogo_transport->dev->kobj, KOBJ_CHANGE);
@@ -313,6 +421,34 @@ static irqreturn_t pogo_isr(int irq, void *dev_id)
 	pm_wakeup_event(pogo_transport->dev, POGO_TIMEOUT_MS);
 
 	return IRQ_WAKE_THREAD;
+}
+
+static int init_hub_gpio(struct pogo_transport *pogo_transport)
+{
+	pogo_transport->pogo_hub_sel_gpio = of_get_named_gpio(pogo_transport->dev->of_node,
+							      "pogo-hub-sel", 0);
+	if (pogo_transport->pogo_hub_sel_gpio < 0) {
+		dev_err(pogo_transport->dev, "Pogo hub sel gpio not found ret:%d\n",
+			pogo_transport->pogo_hub_sel_gpio);
+		return pogo_transport->pogo_hub_sel_gpio;
+	}
+
+	pogo_transport->pogo_hub_reset_gpio = of_get_named_gpio(pogo_transport->dev->of_node,
+								"pogo-hub-reset", 0);
+	if (pogo_transport->pogo_hub_reset_gpio < 0) {
+		dev_err(pogo_transport->dev, "Pogo hub reset gpio not found ret:%d\n",
+			pogo_transport->pogo_hub_reset_gpio);
+		return pogo_transport->pogo_hub_reset_gpio;
+	}
+
+	pogo_transport->hub_state = pinctrl_lookup_state(pogo_transport->pinctrl, "hub");
+	if (IS_ERR(pogo_transport->hub_state)) {
+		dev_err(pogo_transport->dev, "failed to find pinctrl hub ret:%ld\n",
+			PTR_ERR(pogo_transport->hub_state));
+		return PTR_ERR(pogo_transport->hub_state);
+	}
+
+	return 0;
 }
 
 static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
@@ -416,6 +552,14 @@ static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
 
 	pogo_transport->equal_priority = of_property_read_bool(pogo_transport->dev->of_node,
 							       "equal-priority");
+
+	pogo_transport->hub_embedded = of_property_read_bool(pogo_transport->dev->of_node,
+							     "hub-embedded");
+	if (pogo_transport->hub_embedded) {
+		ret = init_hub_gpio(pogo_transport);
+		if (ret)
+			goto disable_irq;
+	}
 
 	if (!of_property_read_bool(pogo_transport->dev->of_node, "pogo-ovp-en")) {
 		pogo_transport->pogo_ovp_en_gpio = -EINVAL;
@@ -637,11 +781,43 @@ static ssize_t force_pogo_show(struct device *dev, struct device_attribute *attr
 }
 static DEVICE_ATTR_RW(force_pogo);
 
+static ssize_t enable_hub_store(struct device *dev, struct device_attribute *attr, const char *buf,
+				size_t size)
+{
+	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
+	bool enable_hub;
+
+	if (!pogo_transport->hub_embedded)
+		return size;
+
+	if (kstrtobool(buf, &enable_hub))
+		return -EINVAL;
+
+	if (enable_hub == pogo_transport->pogo_hub_active)
+		return size;
+
+	logbuffer_log(pogo_transport->log, "%s: %sable hub", __func__, enable_hub ? "en" : "dis");
+	if (enable_hub)
+		pogo_transport_event(pogo_transport, EVENT_ENABLE_HUB, 0);
+	else
+		pogo_transport_event(pogo_transport, EVENT_DISABLE_HUB, 0);
+
+	return size;
+}
+
+static ssize_t enable_hub_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct pogo_transport *pogo_transport  = dev_get_drvdata(dev);
+	return sysfs_emit(buf, "%u\n", pogo_transport->pogo_hub_active);
+}
+static DEVICE_ATTR_RW(enable_hub);
+
 static struct attribute *pogo_transport_attrs[] = {
 	&dev_attr_move_data_to_usb.attr,
 	&dev_attr_equal_priority.attr,
 	&dev_attr_pogo_usb_active.attr,
 	&dev_attr_force_pogo.attr,
+	&dev_attr_enable_hub.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(pogo_transport);
