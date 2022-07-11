@@ -16,9 +16,12 @@
 			google_pogo: google,pogo {
 				status = "okay";
 				compatible = "pogo-transport";
-				pinctrl-names = "suspend-to-usb", "suspend-to-pogo";
-				pinctrl-0 = <&pogo_trans_stat &pogo_trans_sel_usb>;
-				pinctrl-1 = <&pogo_trans_stat &pogo_trans_sel_pogo>;
+				pinctrl-names = "suspend-to-usb", "suspend-to-pogo", "hub";
+				pinctrl-0 = <&pogo_trans_stat &pogo_trans_pogo_sel_usb>;
+				pinctrl-1 = <&pogo_trans_stat &pogo_trans_pogo_sel_pogo
+					     &pogo_trans_hub_sel_pogo>;
+				pinctrl-2 = <&pogo_trans_stat &pogo_trans_pogo_sel_hub
+					     &pogo_trans_hub_sel_hub>;
 				interrupt-parent = <&gpa8>;
 				pogo-transport-status = <&gpa8 3 GPIO_ACTIVE_LOW>;
 				pogo-transport-sel = <&gpp1 0 GPIO_ACTIVE_HIGH>;
@@ -26,6 +29,10 @@
 				pogo-psy-name = "dock";
 				equal-priority;
 				pogo-ovp-en = <&s2mpg12_gpio 2 GPIO_ACTIVE_LOW>;
+
+				hub-embedded;
+				pogo-hub-reset = <&gpp0 0 GPIO_ACTIVE_HIGH>;
+				pogo-hub-sel = <&gpp2 0 GPIO_ACTIVE_HIGH>;
 			};
 		};
 	};
@@ -42,7 +49,25 @@
 
 /* GPIO_PERIC0 */
 &pinctrl_4 {
-	pogo_trans_sel_usb: pogo-transport-sel-usb {
+	pogo_trans_pogo_sel_usb: pogo-transport-pogo-sel-usb {
+		samsung,pins = "gpp1-0", "gpp2-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT0>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	pogo_trans_pogo_sel_pogo: pogo-transport-pogo-sel-pogo {
+		samsung,pins = "gpp1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT1>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	pogo_trans_pogo_sel_hub: pogo-transport-pogo-sel-hub {
 		samsung,pins = "gpp1-0";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
@@ -51,7 +76,16 @@
 		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
 	};
 
-	pogo_trans_sel_pogo: pogo-transport-sel-pogo {
+	pogo_trans_hub_sel_pogo: pogo-transport-hub-sel-pogo {
+		samsung,pins = "gpp2-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT0>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	pogo_trans_hub_sel_hub: pogo-transport-hub-sel-hub {
 		samsung,pins = "gpp1-0";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
@@ -59,4 +93,17 @@
 		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT1>;
 		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
 	};
+
+	pogo_trans_reset_hub: pogo-transport-reset-hub {
+		samsung,pins = "gpp0-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT0>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+&hsi2c1_bus {
+	samsung,pins = /*"gpp2-0",*/ "gpp2-1";
 };
