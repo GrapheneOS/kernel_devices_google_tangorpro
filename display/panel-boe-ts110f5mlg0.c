@@ -17,11 +17,27 @@
 #define TS110F5MLG0_WRCTRLD_DD_BIT	0x08
 #define TS110F5MLG0_WRCTRLD_BL_BIT	0x04
 #define TS110F5MLG0_WRCTRLD_BCTRL_BIT	0x20
+#define TS110F5MLG0_PANEL_ID_REG	0x00
+#define TS110F5MLG0_PANEL_ID_LEN	37
+
+#if TS110F5MLG0_PANEL_ID_LEN >= PANEL_ID_MAX
+	#error PANEL_ID_MAX should be greater than TS110F5MLG0_PANEL_ID_LEN
+#endif
 
 static const u8 display_on[] = { 0x29 };
 static const u8 display_off[] = { 0x28 };
 static const u8 sleep_out[] = { 0x11 };
 static const u8 sleep_in[] = { 0x10 };
+
+static const u32 ts110f5mlg0_panel_rev[] = {
+	PANEL_REV_PROTO1,
+	PANEL_REV_PROTO2,
+	PANEL_REV_EVT1,
+	PANEL_REV_EVT1_1,
+	PANEL_REV_EVT2,
+	PANEL_REV_DVT1,
+	PANEL_REV_PVT,
+};
 
 static const struct exynos_dsi_cmd ts110f5mlg0_init_cmds[] = {
 	/* CMD2, Page0 */
@@ -198,8 +214,41 @@ static void ts110f5mlg0_set_cabc_mode(struct exynos_panel *ctx,
 
 static int ts110f5mlg0_read_id(struct exynos_panel *ctx)
 {
-	/* hardcode 0 as reading id is not supported in this IC */
-	strlcpy(ctx->panel_id, "0", PANEL_ID_MAX);
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	int read_bytes = 0;
+	u8 i;
+
+	if (ctx->panel_rev < PANEL_REV_EVT2) {
+		/* hardcode 0 as reading id is not supported in this panel_rev */
+		dev_info(ctx->dev, "read_id is not supported in panel_rev: 0x%x\n", ctx->panel_rev);
+		strlcpy(ctx->panel_id, "0", PANEL_ID_MAX);
+		return 0;
+	}
+
+	/* Change to CMD2, Page2 */
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0xFF, 0x22);
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0xFB, 0x01);
+
+	/* Serial number is stored in different registers, use loop to read it. */
+	for (i = 0; i < TS110F5MLG0_PANEL_ID_LEN; ++i) {
+		read_bytes = mipi_dsi_dcs_read(dsi, TS110F5MLG0_PANEL_ID_REG + i,
+				ctx->panel_id + i, 1);
+		if (read_bytes != 1)
+			break;
+	}
+
+	/* Switch back to CMD1 */
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0xFF, 0x10);
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0xFB, 0x01);
+
+	if (read_bytes != 1) {
+		dev_warn(ctx->dev, "Unable to read panel id (%d)\n", read_bytes);
+		strlcpy(ctx->panel_id, "0", PANEL_ID_MAX);
+		return -EIO;
+	}
+
+	ctx->panel_id[TS110F5MLG0_PANEL_ID_LEN] = '\0';
+
 	return 0;
 }
 
@@ -223,6 +272,23 @@ static void ts110f5mlg0_set_dimming_on(struct exynos_panel *ctx,
 {
 	ctx->dimming_on = dimming_on;
 	ts110f5mlg0_update_wrctrld(ctx);
+}
+
+static void ts110f5mlg0_get_panel_rev(struct exynos_panel *ctx, u32 id)
+{
+	/* extract command 0xDB */
+	u8 build_code = (id & 0xFF00) >> 8;
+	u8 rev = build_code >> 4;
+
+	if (rev >= ARRAY_SIZE(ts110f5mlg0_panel_rev)) {
+		ctx->panel_rev = PANEL_REV_LATEST;
+		dev_warn(ctx->dev,
+			"unknown rev from panel (0x%x), default to latest\n",
+			rev);
+	} else {
+		ctx->panel_rev = ts110f5mlg0_panel_rev[rev];
+		dev_info(ctx->dev, "panel_rev: 0x%x\n", ctx->panel_rev);
+	}
 }
 
 static const struct exynos_panel_mode ts110f5mlg0_modes[] = {
@@ -266,6 +332,7 @@ static const struct exynos_panel_funcs ts110f5mlg0_exynos_funcs = {
 	.set_dimming_on = ts110f5mlg0_set_dimming_on,
 	.set_brightness = exynos_panel_set_brightness,
 	.set_cabc_mode = ts110f5mlg0_set_cabc_mode,
+	.get_panel_rev = ts110f5mlg0_get_panel_rev,
 };
 
 const struct brightness_capability ts110f5mlg0_brightness_capability = {
