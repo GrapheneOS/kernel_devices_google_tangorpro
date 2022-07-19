@@ -86,3 +86,33 @@
 	schematic-name = "VSEN_C6_NC";
 	subsys-name = "Spare";
 };
+
+/* Unused */
+&m_ldo18_reg {
+	/delete-property/ regulator-always-on;
+};
+
+/* Unused */
+&m_ldo26_reg {
+	/delete-property/ regulator-always-on;
+};
+
+/* Unused */
+&s_ldo5_reg {
+	/delete-property/ regulator-boot-on;
+};
+
+/* Unused */
+&s_ldo9_reg {
+	/delete-property/ regulator-always-on;
+};
+
+/* Unused */
+&s_ldo10_reg {
+	/delete-property/ regulator-always-on;
+};
+
+/* Unused */
+&s_ldo11_reg {
+	/delete-property/ regulator-always-on;
+};

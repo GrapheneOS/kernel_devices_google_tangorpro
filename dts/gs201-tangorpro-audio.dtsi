@@ -390,3 +390,8 @@
 
 /* remove haptic audio codec */
 /delete-node/ &dai_be_haptic_rx_codec;
+
+/* Sensor: remove 3v3 (LDO5S) */
+&aoc {
+	sensor_power_list = "sensor_1v8";
+};
