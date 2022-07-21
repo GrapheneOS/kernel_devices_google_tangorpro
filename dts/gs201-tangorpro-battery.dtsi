@@ -22,6 +22,20 @@
 		target-path = "/";
 		__overlay__ {
 			google_battery: google,battery {
+				/* charge table */
+				google,chg-temp-limits = <80 170 200 430 530>;
+				google,chg-cv-limits = <4100000 4400000>;
+				google,chg-cc-limits = <
+					25  25
+					50  50
+					50  50
+					50   0
+				>;
+
+				/* bpst */
+				google,bpst-enable;
+				google,bpst-chg-rate = <50>;
+
 				google,ttf-temp-idx= <2>;
 				google,ttf-adapter = <1980>;
 				google,ttf-soc-table =  <83 89  93  96  98  100>;
