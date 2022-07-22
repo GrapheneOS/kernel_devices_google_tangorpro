@@ -18,6 +18,7 @@
 		reg = <0x2c>;
 
 		bl-name = "lcd-bl";
+		enable-supply = <&m_ldo25_reg>;
 		dev-ctrl = /bits/ 8 <0x81>;
 
 		/* 5 LED strings enabled */
@@ -40,6 +41,7 @@
 		reg = <0x3c>;
 
 		bl-name = "lcd-bl";
+		enable-supply = <&m_ldo25_reg>;
 
 		bit-selection = /bits/ 8 <12>;
 

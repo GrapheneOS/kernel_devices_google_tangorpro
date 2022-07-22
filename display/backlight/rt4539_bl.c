@@ -9,8 +9,10 @@
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/backlight.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/of.h>
+#include <linux/regulator/consumer.h>
 #include "rt4539.h"
 
 #define DEFAULT_BL_NAME				"lcd-backlight"
@@ -51,25 +53,54 @@ struct rt4539 {
 	struct backlight_device *bl;
 	struct device *dev;
 	struct rt4539_platform_data *pdata;
+
+	/*
+	 * There will exist three scenarios for the reg_en regulator.
+	 *
+	 * Case 1. No "enable-supply" in the device tree, reg_en will be set to NULL
+	 * in rt4539_parse_dt. The regulator is configured with regulator-always-on
+	 * and regulator-boot-on.
+	 *
+	 * Case 2. "enable-supply" is provided. The regulator is configured with
+	 * regulator-always-on and regulator-boot-on.
+	 *
+	 * Case 3. "enable-supply" is provided, The regulator is configured with
+	 * regulator-boot-on.
+	 *
+	 * regulator-boot-on is required to enable continuous splash: b/202947589.
+	 */
+	struct regulator *reg_en;	/* regulator for EN pin */
+
+	/*
+	 * true: rt4539 is forced to be blank when system enter suspend mode.
+	 * reg_en case 1: brightness is set to 0 to blank the backlight.
+	 * reg_en case 2: brightness is set to 0 to blank the backlight.
+	 * reg_en case 3: the enable regulator is turned off to save power consumption
+	 * and blank the backlight.
+	 *
+	 * false: rt4539 is not forced to be blank. The enable regulator is on and rt4539
+	 * is ready for further operations.
+	 */
+	bool is_forced_blank;	/* Whether rt4539 is force to be blank or not */
 };
 
-static inline int rt4539_write_byte(struct rt4539 *lp, u8 reg, u8 data)
+static inline int rt4539_write_byte(struct rt4539 *rt, u8 reg, u8 data)
 {
-	int ret = i2c_smbus_write_byte_data(lp->client, reg, data);
+	int ret = i2c_smbus_write_byte_data(rt->client, reg, data);
 
 	if (ret < 0)
-		dev_err(lp->dev, "failed to write 0x%02x: 0x%02x, ret:%d\n", reg, data, ret);
+		dev_err(rt->dev, "failed to write 0x%02x: 0x%02x, ret:%d\n", reg, data, ret);
 
 	return ret;
 }
 
-static int rt4539_update_field(struct rt4539 *lp, u8 reg, u8 mask, u8 data)
+static int rt4539_update_field(struct rt4539 *rt, u8 reg, u8 mask, u8 data)
 {
 	u8 tmp;
-	int ret = i2c_smbus_read_byte_data(lp->client, reg);
+	int ret = i2c_smbus_read_byte_data(rt->client, reg);
 
 	if (ret < 0) {
-		dev_err(lp->dev, "failed to read 0x%02x, ret:%d\n", reg, ret);
+		dev_err(rt->dev, "failed to read 0x%02x, ret:%d\n", reg, ret);
 		return ret;
 	}
 
@@ -77,32 +108,226 @@ static int rt4539_update_field(struct rt4539 *lp, u8 reg, u8 mask, u8 data)
 	tmp &= ~mask;
 	tmp |= data & mask;
 
-	return rt4539_write_byte(lp, reg, tmp);
+	return rt4539_write_byte(rt, reg, tmp);
 }
 
-static inline int rt4539_set_brightness(struct rt4539 *lp, u32 brightness)
+static inline int rt4539_set_brightness(struct rt4539 *rt, u32 brightness)
 {
-	u8 resolution = lp->pdata->bit_selection + BIT_SELECTION_MIN_BITS;
+	u8 resolution = rt->pdata->bit_selection + BIT_SELECTION_MIN_BITS;
 	u16 val = brightness & (BIT(resolution) - 1);
 	int ret = 0;
 
-	if (lp->pdata->bit_selection) {
+	if (rt->pdata->bit_selection) {
 		u8 msb = val >> 8;
 
-		ret = rt4539_update_field(lp, RT4539_REG04, RT4539_REG04_BRIGHTNESS_MSB_MASK, msb);
+		ret = rt4539_update_field(rt, RT4539_REG04, RT4539_REG04_BRIGHTNESS_MSB_MASK, msb);
 	}
-	return ret ? ret : rt4539_write_byte(lp, RT4539_REG05, (u8) (val & 0x00FF));
+	return ret ? ret : rt4539_write_byte(rt, RT4539_REG05, (u8) (val & 0x00FF));
+}
+
+static int rt4539_configure(struct rt4539 *rt, u32 brightness)
+{
+	int ret;
+	u8 mask, data;
+
+	/* disable LED outputs */
+	ret = rt4539_update_field(rt, RT4539_REG0B,
+		RT4539_REG0B_BL_EN_MASK, 0);
+	if (ret < 0)
+		return ret;
+
+	/* set dimming mode */
+	ret = rt4539_update_field(rt, RT4539_REG00,
+		RT4539_REG00_DIMMING_MODE_MASK, rt->pdata->dimming_mode);
+	if (ret < 0)
+		return ret;
+
+	/* set boost switching frequency */
+	ret = rt4539_update_field(rt, RT4539_REG01,
+		RT4539_REG01_BOOST_SWITCH_FREQ_MASK, rt->pdata->boost_switch_freq);
+	if (ret < 0)
+		return ret;
+
+	/* set max current */
+	ret = i2c_smbus_write_byte_data(rt->client, RT4539_REG02,
+		rt->pdata->current_max);
+	if (ret < 0)
+		return ret;
+
+	/* set mapping mode and bit selection */
+	mask = RT4539_REG03_ILED_MAPPING_MASK | RT4539_REG03_BIT_SELECTION_MASK;
+	data = (rt->pdata->exponential_mapping
+			? (1 << RT4539_REG03_ILED_MAPPING_SHIFT) : 0) &
+			RT4539_REG03_ILED_MAPPING_MASK;
+	data |= rt->pdata->bit_selection & RT4539_REG03_BIT_SELECTION_MASK;
+	ret = rt4539_update_field(rt, RT4539_REG03, mask, data);
+	if (ret < 0)
+		return ret;
+
+	/* set brightness */
+	ret = rt4539_set_brightness(rt, brightness);
+	if (ret < 0)
+		return ret;
+
+	/* set advanced brightness control */
+	ret = rt4539_update_field(rt, RT4539_REG07,
+		RT4539_REG07_ADV_BRIGHT_CTRL_MASK,
+		rt->pdata->brightness_control);
+	if (ret < 0)
+		return ret;
+
+	/* set PFM enable and LED unused check */
+	mask = RT4539_REG09_PFM_ENABLE_MASK | RT4539_REG09_LED_UNUSED_CHECK_MASK;
+	data = rt->pdata->pfm_enable & RT4539_REG09_PFM_ENABLE_MASK;
+	data |= (rt->pdata->led_unused_check ?
+		(1 << RT4539_REG09_LED_UNUSED_CHECK_SHIFT) : 0) &
+		RT4539_REG09_LED_UNUSED_CHECK_MASK;
+	ret = rt4539_update_field(rt, RT4539_REG09, mask, data);
+	if (ret < 0)
+		return ret;
+
+	/* set boot OVP and LED short protect */
+	mask = RT4539_REG0A_BOOST_OVP_MASK | RT4539_REG0A_LED_SHORT_PROTECT_MASK;
+	data = rt->pdata->boost_ovp_selection & RT4539_REG0A_BOOST_OVP_MASK;
+	data |= (rt->pdata->led_short_protection ?
+		(1 << RT4539_REG0A_LED_SHORT_PROTECT_SHIFT) : 0) &
+		RT4539_REG0A_LED_SHORT_PROTECT_MASK;
+	ret = rt4539_update_field(rt, RT4539_REG0A, mask, data);
+	if (ret < 0)
+		return ret;
+
+	/* set LED enable bits and enable LED outputs */
+	mask = RT4539_REG0B_LED_EN_MASK | RT4539_REG0B_BL_EN_MASK;
+	data = rt->pdata->enabled_leds & RT4539_REG0B_LED_EN_MASK;
+	data |= (1 << RT4539_REG0B_BL_EN_SHIFT) & RT4539_REG0B_BL_EN_MASK;
+	ret = rt4539_update_field(rt, RT4539_REG0B, mask, data);
+
+	return ret;
+}
+
+/**
+ * rt4539_enable - turn on the enable regulator and configure rt4539 if needed
+ * @rt: the rt4539 structure.
+ * @brightness: brightness value to be set.
+ * @needs_configure: true if it is necessary to configure the rt4539, false otherwise
+ */
+static int rt4539_enable(struct rt4539 *rt, u32 brightness, bool needs_configure)
+{
+	int ret = 0;
+	bool en_already_on = !rt->reg_en || regulator_is_enabled(rt->reg_en);
+
+	if (rt->reg_en) {
+		/*
+		 * For reg_en case 3, although the enable regulator may already be turned on
+		 * in bootloader. It is still necessary to trigger regulator_enable. Otherwise,
+		 * the enable regulator will be turned off in regulator_late_cleanup due to
+		 * use_count equal to 0.
+		 *
+		 * Because it is hard to distinguish between reg_en case 2 and case 3, so also
+		 * trigger regulator_enable for reg_en case 2.
+		 */
+		ret = regulator_enable(rt->reg_en);
+		if (ret < 0) {
+			dev_err(rt->dev, "failed to turn on the enable regulator, ret: %d\n", ret);
+			return ret;
+		}
+
+		/* When the enable regulator is just turned on, wait until rt4539 is ready. */
+		if (en_already_on == false)
+			usleep_range(1000, 2000);
+	}
+
+	/*
+	 * is_forced_blank is set to false means the enable regulator is turned on and
+	 * rt4539 is ready for further operations.
+	 */
+	rt->is_forced_blank = false;
+
+	if (!en_already_on || needs_configure) {
+		ret = rt4539_configure(rt, brightness);
+
+		if (ret < 0)
+			dev_err(rt->dev, "failed to configure. err: %d\n", ret);
+	} else {
+		/*
+		 * If the enable regulator is already turned on and rt4539 has been configured
+		 * at least once. Only need to set brightness here.
+		 */
+		ret = rt4539_set_brightness(rt, brightness);
+		if (ret < 0)
+			dev_err(rt->dev, "failed to set brightness. err: %d\n", ret);
+	}
+
+	return ret;
+}
+
+/**
+ * rt4539_disable - turn off the enable regulator or force brightness to 0
+ * @rt: the rt4539 structure
+ */
+static int rt4539_disable(struct rt4539 *rt)
+{
+	int ret = 0;
+
+	if (rt->reg_en) {
+		/* Turn off the enable regulator */
+		ret = regulator_disable(rt->reg_en);
+
+		if (ret < 0)
+			dev_err(rt->dev, "error in regulator_disable: %d\n", ret);
+
+		/*
+		 * If the regulator is turned off, rt4539 is forced to be blank successfully.
+		 * Return here to prevent further operations such as set_brightness.
+		 */
+		if (!regulator_is_enabled(rt->reg_en)) {
+			rt->is_forced_blank = true;
+			return 0;
+		}
+	}
+
+	/*
+	 * If regulator is not specified or still on, set the brightness
+	 * to 0 instead.
+	 */
+	ret = rt4539_set_brightness(rt, 0);
+	if (ret < 0)
+		dev_err(rt->dev, "failed to set brightness. err: %d\n", ret);
+	else
+		rt->is_forced_blank = true;	/* Brightness is set to 0 successfully. */
+
+	return ret;
 }
 
 static int rt4539_bl_update_status(struct backlight_device *bl)
 {
-	struct rt4539 *lp = bl_get_data(bl);
-	int brightness = bl->props.brightness;
+	struct rt4539 *rt = bl_get_data(bl);
+	int ret = 0, brightness = bl->props.brightness;
+	bool is_blank = backlight_is_blank(bl);
 
-	if (bl->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))
-		brightness = 0;
+	if (is_blank != rt->is_forced_blank) {
+		/*
+		 * If the request state is_blank is different from current state
+		 * rt->is_forced_blank, then apply corresponding operation.
+		 */
+		if (is_blank)
+			return rt4539_disable(rt);
+		else
+			return rt4539_enable(rt, brightness, false);
+	}
 
-	return rt4539_set_brightness(lp, brightness);
+	if (is_blank == false) {
+		ret = rt4539_set_brightness(rt, brightness);
+		if (ret < 0)
+			dev_err(rt->dev, "failed to set brightness. err: %d\n", ret);
+	}
+	/*
+	 * For the else case (is_blank is true), rt4539 is already turned off
+	 * or set brightness to 0. We should not set the brightness again. Otherwise,
+	 * we may encounter I2C read write error (reg_en case 3).
+	 */
+
+	return ret;
 }
 
 static const struct backlight_ops rt4539_bl_ops = {
@@ -110,13 +335,13 @@ static const struct backlight_ops rt4539_bl_ops = {
 	.update_status = rt4539_bl_update_status,
 };
 
-static int rt4539_backlight_register(struct rt4539 *lp)
+static int rt4539_backlight_register(struct rt4539 *rt)
 {
 	struct backlight_device *bl;
 	struct backlight_properties props;
-	struct rt4539_platform_data *pdata = lp->pdata;
+	struct rt4539_platform_data *pdata = rt->pdata;
 	const char *name = pdata->name ? : DEFAULT_BL_NAME;
-	u8 resolution = lp->pdata->bit_selection + BIT_SELECTION_MIN_BITS;
+	u8 resolution = rt->pdata->bit_selection + BIT_SELECTION_MIN_BITS;
 
 	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_PLATFORM;
@@ -127,118 +352,24 @@ static int rt4539_backlight_register(struct rt4539 *lp)
 
 	props.brightness = pdata->initial_brightness;
 
-	bl = devm_backlight_device_register(lp->dev, name, lp->dev, lp,
+	bl = devm_backlight_device_register(rt->dev, name, rt->dev, rt,
 				       &rt4539_bl_ops, &props);
 	if (IS_ERR(bl))
 		return -EPROBE_DEFER;
 
-	lp->bl = bl;
+	rt->bl = bl;
 
 	return 0;
 }
 
-static int rt4539_configure(struct rt4539 *lp)
-{
-	int ret;
-
-	/* disable LED outputs */
-	ret = rt4539_update_field(lp, RT4539_REG0B,
-		RT4539_REG0B_BL_EN_MASK, 0);
-	if (ret < 0)
-		return ret;
-
-	/* set dimming mode */
-	ret = rt4539_update_field(lp, RT4539_REG00,
-		RT4539_REG00_DIMMING_MODE_MASK, lp->pdata->dimming_mode);
-	if (ret < 0)
-		return ret;
-
-	/* set boost switching frequency */
-	ret = rt4539_update_field(lp, RT4539_REG01,
-		RT4539_REG01_BOOST_SWITCH_FREQ_MASK, lp->pdata->boost_switch_freq);
-	if (ret < 0)
-		return ret;
-
-	/* set max current */
-	ret = i2c_smbus_write_byte_data(lp->client, RT4539_REG02,
-		lp->pdata->current_max);
-	if (ret < 0)
-		return ret;
-
-	/* set mapping mode */
-	ret = rt4539_update_field(lp, RT4539_REG03,
-		RT4539_REG03_ILED_MAPPING_MASK,
-		lp->pdata->exponential_mapping
-			? (1 << RT4539_REG03_ILED_MAPPING_SHIFT) : 0);
-	if (ret < 0)
-		return ret;
-
-	/* set bit selection */
-	ret = rt4539_update_field(lp, RT4539_REG03,
-		RT4539_REG03_BIT_SELECTION_MASK,
-		lp->pdata->bit_selection);
-	if (ret < 0)
-		return ret;
-
-	/* set brightness */
-	ret = rt4539_set_brightness(lp, lp->pdata->initial_brightness);
-	if (ret < 0)
-		return ret;
-
-	/* set advanced brightness control */
-	ret = rt4539_update_field(lp, RT4539_REG07,
-		RT4539_REG07_ADV_BRIGHT_CTRL_MASK,
-		lp->pdata->brightness_control);
-	if (ret < 0)
-		return ret;
-
-	ret = rt4539_update_field(lp, RT4539_REG09,
-		RT4539_REG09_PFM_ENABLE_MASK,
-		lp->pdata->pfm_enable);
-	if (ret < 0)
-		return ret;
-
-	ret = rt4539_update_field(lp, RT4539_REG09,
-		RT4539_REG09_LED_UNUSED_CHECK_MASK,
-		lp->pdata->led_unused_check ?
-		(1 << RT4539_REG09_LED_UNUSED_CHECK_SHIFT) : 0);
-	if (ret < 0)
-		return ret;
-
-	ret = rt4539_update_field(lp, RT4539_REG0A,
-		RT4539_REG0A_BOOST_OVP_MASK,
-		lp->pdata->boost_ovp_selection);
-	if (ret < 0)
-		return ret;
-
-	ret = rt4539_update_field(lp, RT4539_REG0A,
-		RT4539_REG0A_LED_SHORT_PROTECT_MASK,
-		lp->pdata->led_short_protection ?
-		(1 << RT4539_REG0A_LED_SHORT_PROTECT_SHIFT) : 0);
-	if (ret < 0)
-		return ret;
-
-	/* set LED enable bits */
-	ret = rt4539_update_field(lp, RT4539_REG0B,
-		RT4539_REG0B_LED_EN_MASK,
-		lp->pdata->enabled_leds);
-	if (ret < 0)
-		return ret;
-
-	/* enable LED outputs */
-	ret = rt4539_update_field(lp, RT4539_REG0B,
-		RT4539_REG0B_BL_EN_MASK, 1 << RT4539_REG0B_BL_EN_SHIFT);
-
-	return ret;
-}
-
 #ifdef CONFIG_OF
-static int rt4539_parse_dt(struct rt4539 *lp)
+static int rt4539_parse_dt(struct rt4539 *rt)
 {
-	struct device *dev = lp->dev;
+	struct device *dev = rt->dev;
 	struct device_node *node = dev->of_node;
 	struct rt4539_platform_data *pdata;
 	u8 resolution;
+	int ret;
 
 	if (!node) {
 		dev_err(dev, "no platform data\n");
@@ -278,12 +409,21 @@ static int rt4539_parse_dt(struct rt4539 *lp)
 	pdata->pfm_enable
 		= of_property_read_bool(node, "pfm-enable");
 
-	lp->pdata = pdata;
+	rt->reg_en = devm_regulator_get_optional(dev, "enable");
+	if (IS_ERR(rt->reg_en)) {
+		ret = PTR_ERR(rt->reg_en);
+		if (ret == -ENODEV)
+			rt->reg_en = NULL;
+		else
+			return dev_err_probe(dev, ret, "getting enable regulator\n");
+	}
+
+	rt->pdata = pdata;
 
 	return 0;
 }
 #else
-static int rt4539_parse_dt(struct rt4539 *lp)
+static int rt4539_parse_dt(struct rt4539 *rt)
 {
 	return -EINVAL;
 }
@@ -291,54 +431,55 @@ static int rt4539_parse_dt(struct rt4539 *lp)
 
 static int rt4539_probe(struct i2c_client *cl, const struct i2c_device_id *id)
 {
-	struct rt4539 *lp;
+	struct rt4539 *rt;
 	int ret;
 
 	if (!i2c_check_functionality(cl->adapter, I2C_FUNC_SMBUS_I2C_BLOCK))
 		return -EIO;
 
-	lp = devm_kzalloc(&cl->dev, sizeof(struct rt4539), GFP_KERNEL);
-	if (!lp)
+	rt = devm_kzalloc(&cl->dev, sizeof(struct rt4539), GFP_KERNEL);
+	if (!rt)
 		return -ENOMEM;
 
-	lp->client = cl;
-	lp->dev = &cl->dev;
-	lp->pdata = dev_get_platdata(&cl->dev);
+	rt->client = cl;
+	rt->dev = &cl->dev;
+	rt->pdata = dev_get_platdata(&cl->dev);
 
-	if (!lp->pdata) {
-		ret = rt4539_parse_dt(lp);
+	if (!rt->pdata) {
+		ret = rt4539_parse_dt(rt);
 		if (ret < 0) {
-			dev_err(lp->dev, "failed to parse dt. err: %d\n", ret);
+			dev_err(rt->dev, "failed to parse dt. err: %d\n", ret);
 			return -EPROBE_DEFER;
 		}
 	}
 
-	i2c_set_clientdata(cl, lp);
+	i2c_set_clientdata(cl, rt);
+	rt->is_forced_blank = rt->reg_en && !regulator_is_enabled(rt->reg_en);
 
-	ret = rt4539_configure(lp);
+	ret = rt4539_enable(rt, rt->pdata->initial_brightness, true);
 	if (ret < 0) {
-		dev_err(lp->dev, "failed to configure. err: %d\n", ret);
+		dev_err(rt->dev, "failed to enable. err: %d\n", ret);
 		return ret;
 	}
 
-	ret = rt4539_backlight_register(lp);
+	ret = rt4539_backlight_register(rt);
 	if (ret) {
-		dev_err(lp->dev,
+		dev_err(rt->dev,
 			"failed to register backlight. err: %d\n", ret);
 		return -EPROBE_DEFER;
 	}
-
-	backlight_update_status(lp->bl);
 
 	return 0;
 }
 
 static int rt4539_remove(struct i2c_client *cl)
 {
-	struct rt4539 *lp = i2c_get_clientdata(cl);
+	struct rt4539 *rt = i2c_get_clientdata(cl);
 
-	lp->bl->props.brightness = 0;
-	backlight_update_status(lp->bl);
+	rt->bl->props.brightness = 0;
+	backlight_update_status(rt->bl);
+	if (rt->is_forced_blank == false)
+		rt4539_disable(rt);
 
 	return 0;
 }
