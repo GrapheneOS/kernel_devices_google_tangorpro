@@ -396,7 +396,7 @@ static int rt4539_parse_dt(struct rt4539 *rt)
 	of_property_read_u8(node, "brightness-control",
 		&pdata->brightness_control);
 	of_property_read_u8(node, "enabled-leds", &pdata->enabled_leds);
-	of_property_read_u8(node, "initial-brightness",
+	of_property_read_u16(node, "initial-brightness",
 		&pdata->initial_brightness);
 	of_property_read_u8(node, "boost-ovp-selection",
 		&pdata->boost_ovp_selection);
