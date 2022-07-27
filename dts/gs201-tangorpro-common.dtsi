@@ -37,6 +37,7 @@
 #include "gs201-tangorpro-wlan.dtsi"
 #include "gs201-tangorpro-led.dtsi"
 #include "gs201-tangorpro-fingerprint.dtsi"
+#include "gs201-tangorpro-typec.dtsi"
 #include "gs201-pogo-transport.dtsi"
 
 / {
