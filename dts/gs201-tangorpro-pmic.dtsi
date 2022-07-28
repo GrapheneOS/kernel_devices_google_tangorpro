@@ -15,13 +15,9 @@
 };
 
 /* Display: vci-supply voltage */
-/ {
-	display_fixed_vci: fixedregulator@0 {
-		compatible = "regulator-fixed";
-		regulator-name = "vci";
-		gpio = <&gpp23 1 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-	};
+&disp_vci {
+	status = "okay";
+	gpio = <&gpp23 1 GPIO_ACTIVE_HIGH>;
 };
 
 /* Display: backlight enable */
