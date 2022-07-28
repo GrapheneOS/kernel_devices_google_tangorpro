@@ -19,6 +19,8 @@
 
 	/* S2MPG12X01 -> GPIO_2 -> POGO_OVP_EN_L */
 	max77759,pogo-ovp-en = <&s2mpg12_gpio 2 GPIO_ACTIVE_LOW>;
+	/* APC GPIOs -> XAPC_GPIO1 -> POGO_VOUT_SW_EN */
+	max77759,pogo-vout-sw-en = <&gpp0 2 GPIO_ACTIVE_LOW>;
 
 	/* The high/low bound of vbatt for FCCM mode */
 	max77759,otg-fccm-vbatt-upperbd = <4000>;
