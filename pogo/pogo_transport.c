@@ -349,7 +349,8 @@ exit:
 	kobject_uevent(&pogo_transport->dev->kobj, KOBJ_CHANGE);
 free:
 	logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO,
-		       "evt:%d force_u:%d force_p:%d pogo_usb:%d pogo_usb_active:%d data_active:%d vol_now:%d retry:%u",
+		       "evt:%d docked:%d force_u:%d force_p:%d pogo_usb:%d pogo_usb_active:%d data_active:%d vol_now:%d retry:%u",
+		       docked ? 1 : 0,
 		       event->event_type,
 		       modparam_force_usb ? 1 : 0,
 		       pogo_transport->force_pogo ? 1 : 0,
