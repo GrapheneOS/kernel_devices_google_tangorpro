@@ -46,6 +46,7 @@
 				google,dd-charge-start-level = <87>;
 				google,dd-state = <0>;    /* DOCK_DEFEND_ENABLED */
 				google,dd-settings = <1>; /* DOCK_DEFEND_USER_ENABLED */
+				google,dd-trigger-time = <60>; /* 1 mins */
 			};
 
 			google_dock: google,dock {
