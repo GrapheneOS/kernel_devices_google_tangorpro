@@ -35,7 +35,15 @@ $DEVICE_KERNEL_FILES
 "
 fi
 
-MODULES_LIST=private/devices/google/tangorpro/vendor_kernel_boot_modules.tangorpro
+# Concatenate vendor_kernel_boot_modules.gs201 (platform common) and vendor_kernel_boot_modules.tangorpro (device specified) into one file
+POST_KERNEL_BUILD_CMDS="concat_vendor_boot_modules"
+function concat_vendor_boot_modules() {
+  cat ${KERNEL_DIR}/vendor_kernel_boot_modules.gs201 \
+    private/devices/google/tangorpro/vendor_kernel_boot_modules.tangorpro > \
+    ${OUT_DIR}/vendor_kernel_boot_modules.concat
+  MODULES_LIST=${OUT_DIR}/vendor_kernel_boot_modules.concat
+}
+
 VENDOR_DLKM_MODULES_BLOCKLIST=${KERNEL_DIR}/vendor_dlkm.blocklist.cloudripper
 
 VENDOR_RAMDISK_CMDS="modify_vendor_ramdisk"
