@@ -17,6 +17,22 @@
 #define PPA957DB2D_WRCTRLD_DD_BIT	0x08
 #define PPA957DB2D_WRCTRLD_BL_BIT	0x04
 #define PPA957DB2D_WRCTRLD_BCTRL_BIT	0x20
+#define PPA957DB2D_PANEL_ID_REG		0x00
+#define PPA957DB2D_PANEL_ID_LEN		37
+
+#if PPA957DB2D_PANEL_ID_LEN >= PANEL_ID_MAX
+	#error PANEL_ID_MAX should be greater than PPA957DB2D_PANEL_ID_LEN
+#endif
+
+static const u32 ppa957db2d_panel_rev[] = {
+	PANEL_REV_PROTO1,
+	PANEL_REV_PROTO2,
+	PANEL_REV_EVT1,
+	PANEL_REV_EVT1_1,
+	PANEL_REV_EVT2,
+	PANEL_REV_DVT1,
+	PANEL_REV_PVT,
+};
 
 static const struct exynos_dsi_cmd ppa957db2d_init_cmds[] = {
 	/* CMD2, Page3 */
@@ -117,8 +133,41 @@ static int ppa957db2d_enable(struct drm_panel *panel)
 
 static int ppa957db2d_read_id(struct exynos_panel *ctx)
 {
-	/* hardcode 0 as reading id is not supported in this IC */
-	strlcpy(ctx->panel_id, "0", PANEL_ID_MAX);
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	int read_bytes = 0;
+	u8 i;
+
+	if (ctx->panel_rev < PANEL_REV_EVT2) {
+		/* hardcode 0 as reading id is not supported in this panel_rev */
+		dev_info(ctx->dev, "read_id is not supported in panel_rev: 0x%x\n", ctx->panel_rev);
+		strlcpy(ctx->panel_id, "0", PANEL_ID_MAX);
+		return 0;
+	}
+
+	/* Change to CMD2, Page2 */
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0xFF, 0x22);
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0xFB, 0x01);
+
+	/* Serial number is stored in different registers, use loop to read it. */
+	for (i = 0; i < PPA957DB2D_PANEL_ID_LEN; ++i) {
+		read_bytes = mipi_dsi_dcs_read(dsi, PPA957DB2D_PANEL_ID_REG + i,
+				ctx->panel_id + i, 1);
+		if (read_bytes != 1)
+			break;
+	}
+
+	/* Switch back to CMD1 */
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0xFF, 0x10);
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0xFB, 0x01);
+
+	if (read_bytes != 1) {
+		dev_warn(ctx->dev, "Unable to read panel id (%d)\n", read_bytes);
+		strlcpy(ctx->panel_id, "0", PANEL_ID_MAX);
+		return -EIO;
+	}
+
+	ctx->panel_id[PPA957DB2D_PANEL_ID_LEN] = '\0';
+
 	return 0;
 }
 
@@ -142,6 +191,23 @@ static void ppa957db2d_set_dimming_on(struct exynos_panel *ctx,
 {
 	ctx->dimming_on = dimming_on;
 	ppa957db2d_update_wrctrld(ctx);
+}
+
+static void ppa957db2d_get_panel_rev(struct exynos_panel *ctx, u32 id)
+{
+	/* extract command 0xDB */
+	u8 build_code = (id & 0xFF00) >> 8;
+	u8 rev = build_code >> 4;
+
+	if (rev >= ARRAY_SIZE(ppa957db2d_panel_rev)) {
+		ctx->panel_rev = PANEL_REV_LATEST;
+		dev_warn(ctx->dev,
+			"unknown rev from panel (0x%x), default to latest\n",
+			rev);
+	} else {
+		ctx->panel_rev = ppa957db2d_panel_rev[rev];
+		dev_info(ctx->dev, "panel_rev: 0x%x\n", ctx->panel_rev);
+	}
 }
 
 static const struct exynos_panel_mode ppa957db2d_modes[] = {
@@ -184,6 +250,7 @@ static const struct exynos_panel_funcs ppa957db2d_exynos_funcs = {
 	.panel_reset = ppa957db2d_reset,
 	.set_dimming_on = ppa957db2d_set_dimming_on,
 	.set_brightness = exynos_panel_set_brightness,
+	.get_panel_rev = ppa957db2d_get_panel_rev,
 };
 
 const struct brightness_capability ppa957db2d_brightness_capability = {
