@@ -42,6 +42,86 @@
 	regulator-initial-mode = <SEC_OPMODE_ON>;
 };
 
+&m_ldo16_reg {
+	schematic-name = "L16M_SPARE";
+	subsys-name = "Spare";
+};
+
+&m_ldo18_reg {
+	schematic-name = "L18M_SPARE";
+	subsys-name = "Spare";
+};
+
+&m_ldo20_reg {
+	schematic-name = "L20M_DMIC2";
+};
+
+&m_ldo24_reg {
+	schematic-name = "L24M_DISP_VDDI";
+	subsys-name = "Display";
+};
+
+&m_ldo26_reg {
+	schematic-name = "L26M_ACC_DETECT";
+	subsys-name = "Pogo";
+};
+
+&m_ldo27_reg {
+	schematic-name = "L27M_SPARE";
+	subsys-name = "Spare";
+};
+
+&m_ldo28_reg {
+	schematic-name = "L28M_SPARE";
+	subsys-name = "Spare";
+};
+
+&s_buckc_reg {
+	subsys-name = "UFS";
+};
+
+&s_buckd_reg {
+	subsys-name = "UFS";
+};
+
+&s_ldo5_reg {
+	schematic-name = "L5S_SPARE";
+	subsys-name = "Spare";
+};
+
+&s_ldo9_reg {
+	schematic-name = "L9S_SPARE";
+	subsys-name = "Spare";
+};
+
+&s_ldo10_reg {
+	schematic-name = "L10S_SPARE";
+	subsys-name = "Spare";
+};
+
+&s_ldo11_reg {
+	schematic-name = "L11S_SPARE";
+	subsys-name = "Spare";
+};
+
+&s_ldo12_reg {
+	schematic-name = "L12S_SPARE";
+	subsys-name = "Spare";
+};
+
+&s_ldo15_reg {
+	schematic-name = "L15S_FPS";
+};
+
+&s_ldo20_reg {
+	schematic-name = "L20S_DMIC1";
+};
+
+&s_ldo28_reg {
+	schematic-name = "L28S_USB_HUB";
+	subsys-name = "USB";
+};
+
 /* No modem on Tangor Pro */
 /* replace VSYS_PWR_MMWAVE to L1M_ALIVE */
 &ch1 {
