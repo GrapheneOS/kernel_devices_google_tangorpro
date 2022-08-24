@@ -18,6 +18,7 @@
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
+#include <linux/regulator/consumer.h>
 #include <linux/usb/tcpm.h>
 
 #include "../tcpci.h"
@@ -66,6 +67,7 @@ struct pogo_transport {
 	int pogo_hub_sel_gpio;
 	int pogo_hub_reset_gpio;
 	int pogo_ovp_en_gpio;
+	struct regulator *hub_ldo;
 	/* Raw value of the active state. Set to 1 when pogo_ovp_en is ACTIVE_HIGH */
 	bool pogo_ovp_en_active_state;
 	struct pinctrl *pinctrl;
@@ -115,6 +117,26 @@ static void update_extcon_dev(struct pogo_transport *pogo_transport, bool docked
 			docked ? "set" : "clear");
 }
 
+static void disable_and_bypass_hub(struct pogo_transport *pogo_transport)
+{
+	int ret;
+
+	if (!pogo_transport->hub_embedded)
+		return;
+
+	/* USB_MUX_HUB_SEL set to 0 to bypass the hub */
+	gpio_set_value(pogo_transport->pogo_hub_sel_gpio, 0);
+	logbuffer_log(pogo_transport->log, "POGO: hub-mux:%d",
+		      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
+	pogo_transport->pogo_hub_active = false;
+
+	if (pogo_transport->hub_ldo && regulator_is_enabled(pogo_transport->hub_ldo) > 0) {
+		ret = regulator_disable(pogo_transport->hub_ldo);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "Failed to disable hub_ldo %d", ret);
+	}
+}
+
 static void switch_to_usbc_locked(struct pogo_transport *pogo_transport)
 {
 	struct max77759_plat *chip = pogo_transport->chip;
@@ -127,13 +149,7 @@ static void switch_to_usbc_locked(struct pogo_transport *pogo_transport)
 		pogo_transport->pogo_usb_active = false;
 	}
 
-	if (pogo_transport->hub_embedded) {
-		/* USB_MUX_HUB_SEL set to 0 to bypass the hub */
-		gpio_set_value(pogo_transport->pogo_hub_sel_gpio, 0);
-		logbuffer_log(pogo_transport->log, "POGO: hub-mux:%d",
-			      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
-		pogo_transport->pogo_hub_active = false;
-	}
+	disable_and_bypass_hub(pogo_transport);
 
 	ret = pinctrl_select_state(pogo_transport->pinctrl, pogo_transport->susp_usb_state);
 	if (ret)
@@ -162,13 +178,7 @@ static void switch_to_pogo_locked(struct pogo_transport *pogo_transport)
 		chip->data_active = false;
 	}
 
-	if (pogo_transport->hub_embedded) {
-		/* USB_MUX_HUB_SEL set to 0 to bypass the hub */
-		gpio_set_value(pogo_transport->pogo_hub_sel_gpio, 0);
-		logbuffer_log(pogo_transport->log, "POGO: hub-mux:%d",
-			      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
-		pogo_transport->pogo_hub_active = false;
-	}
+	disable_and_bypass_hub(pogo_transport);
 
 	ret = pinctrl_select_state(pogo_transport->pinctrl, pogo_transport->susp_pogo_state);
 	if (ret)
@@ -214,6 +224,13 @@ static void switch_to_hub_locked(struct pogo_transport *pogo_transport)
 		logbuffer_log(pogo_transport->log, "%s: %s turning off host for Pogo", __func__,
 			      ret < 0 ? "Failed" : "Succeeded");
 		pogo_transport->pogo_usb_active = false;
+	}
+
+	if (pogo_transport->hub_ldo) {
+		ret = regulator_enable(pogo_transport->hub_ldo);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to enable hub_ldo %d",
+				      __func__, ret);
 	}
 
 	ret = pinctrl_select_state(pogo_transport->pinctrl, pogo_transport->hub_state);
@@ -422,6 +439,20 @@ static irqreturn_t pogo_isr(int irq, void *dev_id)
 	pm_wakeup_event(pogo_transport->dev, POGO_TIMEOUT_MS);
 
 	return IRQ_WAKE_THREAD;
+}
+
+static int init_regulator(struct pogo_transport *pogo_transport)
+{
+	if (of_property_read_bool(pogo_transport->dev->of_node, "usb-hub-supply")) {
+		pogo_transport->hub_ldo = devm_regulator_get(pogo_transport->dev, "usb-hub");
+		if (IS_ERR(pogo_transport->hub_ldo)) {
+			dev_err(pogo_transport->dev, "Failed to get usb-hub, ret:%ld\n",
+				PTR_ERR(pogo_transport->hub_ldo));
+			return PTR_ERR(pogo_transport->hub_ldo);
+		}
+	}
+
+	return 0;
 }
 
 static int init_hub_gpio(struct pogo_transport *pogo_transport)
@@ -665,6 +696,10 @@ static int pogo_transport_probe(struct platform_device *pdev)
 		goto destroy_worker;
 	}
 
+	ret = init_regulator(pogo_transport);
+	if (ret)
+		goto destroy_worker;
+
 	pogo_psy_name = (char *)of_get_property(dn, "pogo-psy-name", NULL);
 	if (!pogo_psy_name) {
 		dev_err(pogo_transport->dev, "pogo-psy-name not set\n");
@@ -721,6 +756,9 @@ free_np:
 static int pogo_transport_remove(struct platform_device *pdev)
 {
 	struct pogo_transport *pogo_transport = platform_get_drvdata(pdev);
+
+	if (pogo_transport->hub_ldo && regulator_is_enabled(pogo_transport->hub_ldo) > 0)
+		regulator_disable(pogo_transport->hub_ldo);
 
 	disable_irq_wake(pogo_transport->pogo_irq);
 	devm_free_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_transport);
