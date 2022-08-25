@@ -11,7 +11,6 @@
 #include "google-base/gs201-cloudripper-battery.dtsi"
 #include "google-base/gs201-cloudripper-bcl.dtsi"
 #include "google-base/gs201-cloudripper-bluetooth.dtsi"
-#include "google-base/gs201-cloudripper-cp-s5300-sit.dtsi"
 #include "google-base/gs201-cloudripper-gsa-gsc.dtsi"
 #include "google-base/gs201-cloudripper-sbbm.dtsi"
 #include "google-base/gs201-cloudripper-wlan.dtsi"
