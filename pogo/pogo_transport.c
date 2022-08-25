@@ -22,6 +22,7 @@
 #include <linux/usb/tcpm.h>
 
 #include "../tcpci.h"
+#include "google_psy.h"
 #include "tcpci_max77759.h"
 
 #define POGO_TIMEOUT_MS 10000
@@ -30,6 +31,9 @@
 #define POGO_USB_RETRY_INTEREVAL_MS 50
 #define POGO_PSY_DEBOUNCE_MS 50
 #define POGO_PSY_NRDY_RETRY_MS 500
+#define POGO_ACC_GPIO_DEBOUNCE_MS 20
+
+#define KEEP_USB_PATH 2
 
 enum pogo_event_type {
 	/* Reported when docking status changes */
@@ -42,9 +46,18 @@ enum pogo_event_type {
 	EVENT_RETRY_READ_VOLTAGE,
 	/* Reported when data over USB-C is enabled/disabled */
 	EVENT_DATA_ACTIVE_CHANGED,
+
+	/* 5 */
 	/* Hub operation; workable only if hub_embedded is true */
 	EVENT_ENABLE_HUB,
 	EVENT_DISABLE_HUB,
+	EVENT_HALL_SENSOR_ACC_DETECTED,
+	EVENT_HALL_SENSOR_ACC_MALFUNCTION,
+	EVENT_HALL_SENSOR_ACC_UNDOCKED,
+
+	/* 10 */
+	EVENT_POGO_ACC_DETECTED,
+	EVENT_POGO_ACC_CONNECTED,
 };
 
 static bool modparam_force_usb;
@@ -67,7 +80,11 @@ struct pogo_transport {
 	int pogo_hub_sel_gpio;
 	int pogo_hub_reset_gpio;
 	int pogo_ovp_en_gpio;
+	int pogo_acc_gpio;
+	int pogo_acc_irq;
+	unsigned int pogo_acc_gpio_debounce_ms;
 	struct regulator *hub_ldo;
+	struct regulator *acc_detect_ldo;
 	/* Raw value of the active state. Set to 1 when pogo_ovp_en is ACTIVE_HIGH */
 	bool pogo_ovp_en_active_state;
 	struct pinctrl *pinctrl;
@@ -86,6 +103,12 @@ struct pogo_transport {
 	bool hub_embedded;
 	/* When true, pogo takes higher priority */
 	bool force_pogo;
+	/* When true, pogo irq is enabled */
+	bool pogo_irq_enabled;
+	/* When true, hall1_s sensor reports attach event */
+	bool hall1_s_state;
+	/* When true, the path won't switch to pogo if accessory is attached */
+	bool mfg_acc_test;
 	struct kthread_worker *wq;
 	/* To read voltage at the pogo pins */
 	struct power_supply *pogo_psy;
@@ -268,6 +291,7 @@ static void update_pogo_transport(struct kthread_work *work)
 	int ret;
 	union power_supply_propval voltage_now = {0};
 	bool docked = !gpio_get_value(pogo_transport->pogo_gpio);
+	bool acc_detected = gpio_get_value(pogo_transport->pogo_acc_gpio);
 
 	ret = power_supply_get_property(pogo_transport->pogo_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW,
 					&voltage_now);
@@ -357,6 +381,73 @@ static void update_pogo_transport(struct kthread_work *work)
 		else
 			switch_to_usbc_locked(pogo_transport);
 		break;
+	case EVENT_HALL_SENSOR_ACC_DETECTED:
+		/* Disable OVP to prevent the voltage going through POGO_VIN */
+		if (pogo_transport->pogo_ovp_en_gpio >= 0)
+			gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
+						!pogo_transport->pogo_ovp_en_active_state);
+
+		if (pogo_transport->acc_detect_ldo) {
+			ret = regulator_enable(pogo_transport->acc_detect_ldo);
+			if (ret)
+				logbuffer_log(pogo_transport->log, "%s: Failed to enable acc_detect %d",
+					      __func__, ret);
+		}
+		break;
+	case EVENT_HALL_SENSOR_ACC_UNDOCKED:
+		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 0);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to disable pogo_vout %d\n",
+				      __func__, ret);
+
+		if (pogo_transport->acc_detect_ldo &&
+		    regulator_is_enabled(pogo_transport->acc_detect_ldo)) {
+			ret = regulator_disable(pogo_transport->acc_detect_ldo);
+			if (ret)
+				logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect %d",
+					      __func__, ret);
+		}
+
+		if (!pogo_transport->pogo_irq_enabled) {
+			enable_irq(pogo_transport->pogo_irq);
+			pogo_transport->pogo_irq_enabled = true;
+		}
+
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport->pogo_usb_capable = false;
+		break;
+	case EVENT_POGO_ACC_DETECTED:
+		logbuffer_log(pogo_transport->log, "%s: acc detect debounce %s", __func__,
+			      acc_detected ? "success, enabling pogo_vout" : "fail");
+		if (!acc_detected) {
+			pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_UNDOCKED, 0);
+			break;
+		}
+
+		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to enable pogo_vout %d\n",
+				      __func__, ret);
+		break;
+	case EVENT_POGO_ACC_CONNECTED:
+		/*
+		 * Enable pogo only if the acc regulator was enabled. If the regulator has been
+		 * disabled, it means EVENT_HALL_SENSOR_ACC_UNDOCKED was triggered before this
+		 * event.
+		 */
+		if (pogo_transport->acc_detect_ldo &&
+		    regulator_is_enabled(pogo_transport->acc_detect_ldo)) {
+			ret = regulator_disable(pogo_transport->acc_detect_ldo);
+			if (ret)
+				logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect_ldo %d",
+					      __func__, ret);
+
+			if (!pogo_transport->mfg_acc_test) {
+				switch_to_pogo_locked(pogo_transport);
+				pogo_transport->pogo_usb_capable = true;
+			}
+		}
+		break;
 	default:
 		break;
 	}
@@ -396,19 +487,53 @@ static void pogo_transport_event(struct pogo_transport *pogo_transport,
 	kthread_mod_delayed_work(pogo_transport->wq, &evt->work, msecs_to_jiffies(delay_ms));
 }
 
-static irqreturn_t pogo_irq(int irq, void *dev_id)
+static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
+{
+	struct pogo_transport *pogo_transport = dev_id;
+	int pogo_acc_gpio = gpio_get_value(pogo_transport->pogo_acc_gpio);
+
+	logbuffer_log(pogo_transport->log, "Pogo acc threaded irq running, acc_detect %u",
+		      pogo_acc_gpio);
+
+	if (pogo_acc_gpio)
+		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
+				     pogo_transport->pogo_acc_gpio_debounce_ms);
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t pogo_acc_isr(int irq, void *dev_id)
 {
 	struct pogo_transport *pogo_transport = dev_id;
 
-	logbuffer_log(pogo_transport->log, "Pogo threaded irq running");
+	logbuffer_log(pogo_transport->log, "POGO ACC IRQ triggered ");
+	/* FIXME: timeout value? */
+	pm_wakeup_event(pogo_transport->dev, POGO_TIMEOUT_MS);
+
+	return IRQ_WAKE_THREAD;
+}
+
+static irqreturn_t pogo_irq(int irq, void *dev_id)
+{
+	struct pogo_transport *pogo_transport = dev_id;
+	int pogo_gpio = gpio_get_value(pogo_transport->pogo_gpio);
+
+	logbuffer_log(pogo_transport->log, "Pogo threaded irq running, pogo_gpio %u", pogo_gpio);
+
+	if (pogo_transport->acc_detect_ldo &&
+	    regulator_is_enabled(pogo_transport->acc_detect_ldo) > 0) {
+		/* disable the irq to prevent the interrupt storm after pogo 5v out */
+		disable_irq_nosync(pogo_transport->pogo_irq);
+		pogo_transport->pogo_irq_enabled = false;
+		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
+		return IRQ_HANDLED;
+	}
 
 	if (pogo_transport->pogo_ovp_en_gpio >= 0) {
 		/*
 		 * set to active state if pogo_gpio (ACTIVE_LOW) is in active state (0)
 		 * set to disable state if pogo_gpio (ACTIVE_LOW) is in disable state (1)
 		 */
-		gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
-					gpio_get_value(pogo_transport->pogo_gpio) ?
+		gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio, pogo_gpio ?
 					!pogo_transport->pogo_ovp_en_active_state :
 					pogo_transport->pogo_ovp_en_active_state);
 	}
@@ -418,8 +543,7 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 	 * Debounce on docking to differentiate between different docks by
 	 * reading power supply voltage.
 	 */
-	pogo_transport_event(pogo_transport, EVENT_DOCKING,
-			     !gpio_get_value(pogo_transport->pogo_gpio) ? POGO_PSY_DEBOUNCE_MS : 0);
+	pogo_transport_event(pogo_transport, EVENT_DOCKING, !pogo_gpio ? POGO_PSY_DEBOUNCE_MS : 0);
 	return IRQ_HANDLED;
 }
 
@@ -452,7 +576,75 @@ static int init_regulator(struct pogo_transport *pogo_transport)
 		}
 	}
 
+	if (of_property_read_bool(pogo_transport->dev->of_node, "acc-detect-supply")) {
+		pogo_transport->acc_detect_ldo = devm_regulator_get(pogo_transport->dev,
+								    "acc-detect");
+		if (IS_ERR(pogo_transport->acc_detect_ldo)) {
+			dev_err(pogo_transport->dev, "Failed to get acc-detect, ret:%ld\n",
+				PTR_ERR(pogo_transport->acc_detect_ldo));
+			return PTR_ERR(pogo_transport->acc_detect_ldo);
+		}
+	}
+
 	return 0;
+}
+
+static int init_acc_gpio(struct pogo_transport *pogo_transport)
+{
+	int ret;
+
+	pogo_transport->pogo_acc_gpio = of_get_named_gpio(pogo_transport->dev->of_node,
+							  "pogo-acc-detect", 0);
+	if (pogo_transport->pogo_acc_gpio < 0) {
+		dev_err(pogo_transport->dev, "pogo acc detect gpio not found ret:%d\n",
+			pogo_transport->pogo_acc_gpio);
+		return pogo_transport->pogo_acc_gpio;
+	}
+
+	ret = devm_gpio_request(pogo_transport->dev, pogo_transport->pogo_acc_gpio,
+				"pogo-acc-detect");
+	if (ret) {
+		dev_err(pogo_transport->dev, "failed to request pogo-acc-detect gpio, ret:%d\n",
+			ret);
+		return ret;
+	}
+
+	ret = gpio_direction_input(pogo_transport->pogo_acc_gpio);
+	if (ret) {
+		dev_err(pogo_transport->dev, "failed to set pogo-acc-detect as input, ret:%d\n",
+			ret);
+		return ret;
+	}
+
+	ret = gpio_set_debounce(pogo_transport->pogo_acc_gpio, POGO_ACC_GPIO_DEBOUNCE_MS * 1000);
+	if (ret < 0) {
+		dev_info(pogo_transport->dev, "failed to set debounce, ret:%d\n", ret);
+		pogo_transport->pogo_acc_gpio_debounce_ms = POGO_ACC_GPIO_DEBOUNCE_MS;
+	}
+
+	pogo_transport->pogo_acc_irq = gpio_to_irq(pogo_transport->pogo_acc_gpio);
+	if (pogo_transport->pogo_acc_irq <= 0) {
+		dev_err(pogo_transport->dev, "Pogo acc irq not found\n");
+		return -ENODEV;
+	}
+
+	ret = devm_request_threaded_irq(pogo_transport->dev, pogo_transport->pogo_acc_irq,
+					pogo_acc_isr, pogo_acc_irq,
+					(IRQF_SHARED | IRQF_ONESHOT |
+					 IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING),
+					dev_name(pogo_transport->dev), pogo_transport);
+	if (ret < 0) {
+		dev_err(pogo_transport->dev, "pogo-acc-detect request irq failed ret:%d\n", ret);
+		return ret;
+	}
+
+	ret = enable_irq_wake(pogo_transport->pogo_acc_irq);
+	if (ret) {
+		dev_err(pogo_transport->dev, "Enable acc irq wake failed ret:%d\n", ret);
+		devm_free_irq(pogo_transport->dev, pogo_transport->pogo_acc_irq, pogo_transport);
+	}
+
+	return ret;
 }
 
 static int init_hub_gpio(struct pogo_transport *pogo_transport)
@@ -483,7 +675,7 @@ static int init_hub_gpio(struct pogo_transport *pogo_transport)
 	return 0;
 }
 
-static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
+static int init_pogo_gpio(struct pogo_transport *pogo_transport)
 {
 	enum of_gpio_flags flags;
 	int ret;
@@ -528,6 +720,8 @@ static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
 			ret);
 		return ret;
 	}
+
+	pogo_transport->pogo_irq_enabled = true;
 
 	ret = enable_irq_wake(pogo_transport->pogo_irq);
 	if (ret) {
@@ -585,13 +779,6 @@ static int init_pogo_alert_gpio(struct pogo_transport *pogo_transport)
 	pogo_transport->equal_priority = of_property_read_bool(pogo_transport->dev->of_node,
 							       "equal-priority");
 
-	pogo_transport->hub_embedded = of_property_read_bool(pogo_transport->dev->of_node,
-							     "hub-embedded");
-	if (pogo_transport->hub_embedded) {
-		ret = init_hub_gpio(pogo_transport);
-		if (ret)
-			goto disable_irq;
-	}
 
 	if (!of_property_read_bool(pogo_transport->dev->of_node, "pogo-ovp-en")) {
 		pogo_transport->pogo_ovp_en_gpio = -EINVAL;
@@ -728,10 +915,23 @@ static int pogo_transport_probe(struct platform_device *pdev)
 		goto psy_put;
 	}
 
-	ret = init_pogo_alert_gpio(pogo_transport);
+	ret = init_pogo_gpio(pogo_transport);
 	if (ret) {
-		dev_err(chip->dev, "init_pogo_alert_gpio error:%d\n", ret);
+		dev_err(pogo_transport->dev, "init_pogo_gpio error:%d\n", ret);
 		goto psy_put;
+	}
+
+	pogo_transport->hub_embedded = of_property_read_bool(dn, "hub-embedded");
+	if (pogo_transport->hub_embedded) {
+		ret = init_hub_gpio(pogo_transport);
+		if (ret)
+			goto free_pogo_irq;
+	}
+
+	if (of_property_read_bool(dn, "pogo-acc-capable")) {
+		ret = init_acc_gpio(pogo_transport);
+		if (ret)
+			goto free_pogo_irq;
 	}
 
 	register_data_active_callback(data_active_changed, pogo_transport);
@@ -740,6 +940,9 @@ static int pogo_transport_probe(struct platform_device *pdev)
 	of_node_put(data_np);
 	return 0;
 
+free_pogo_irq:
+	disable_irq_wake(pogo_transport->pogo_irq);
+	devm_free_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_transport);
 psy_put:
 	power_supply_put(pogo_transport->pogo_psy);
 destroy_worker:
@@ -760,6 +963,14 @@ static int pogo_transport_remove(struct platform_device *pdev)
 	if (pogo_transport->hub_ldo && regulator_is_enabled(pogo_transport->hub_ldo) > 0)
 		regulator_disable(pogo_transport->hub_ldo);
 
+	if (pogo_transport->acc_detect_ldo &&
+	    regulator_is_enabled(pogo_transport->acc_detect_ldo) > 0)
+		regulator_disable(pogo_transport->acc_detect_ldo);
+
+	if (pogo_transport->pogo_acc_irq > 0) {
+		disable_irq_wake(pogo_transport->pogo_acc_irq);
+		devm_free_irq(pogo_transport->dev, pogo_transport->pogo_acc_irq, pogo_transport);
+	}
 	disable_irq_wake(pogo_transport->pogo_irq);
 	devm_free_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_transport);
 	power_supply_put(pogo_transport->pogo_psy);
@@ -851,12 +1062,96 @@ static ssize_t enable_hub_show(struct device *dev, struct device_attribute *attr
 }
 static DEVICE_ATTR_RW(enable_hub);
 
+static ssize_t hall1_s_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			     size_t size)
+{
+	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
+	u8 enable_acc_detect;
+
+	if (!pogo_transport->acc_detect_ldo)
+		return size;
+
+	if (kstrtou8(buf, 0, &enable_acc_detect))
+		return -EINVAL;
+
+	if (pogo_transport->hall1_s_state == !!enable_acc_detect)
+		return size;
+
+	pogo_transport->hall1_s_state = !!enable_acc_detect;
+
+	/*
+	 * KEEP_USB_PATH is only for factory tests where the USB connection needs to stay at USB-C
+	 * after the accessory is attached.
+	 */
+	if (enable_acc_detect == KEEP_USB_PATH)
+		pogo_transport->mfg_acc_test = true;
+	else
+		pogo_transport->mfg_acc_test = false;
+
+	logbuffer_log(pogo_transport->log, "%s: %sable accessory detection, mfg %u", __func__,
+		      enable_acc_detect ? "en" : "dis", pogo_transport->mfg_acc_test);
+	if (enable_acc_detect)
+		pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_DETECTED, 0);
+	else
+		pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_UNDOCKED, 0);
+
+	return size;
+}
+static DEVICE_ATTR_WO(hall1_s);
+
+static ssize_t hall1_n_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			     size_t size)
+{
+	/* Reserved for HES1 Malfunction detection */
+	return size;
+}
+static DEVICE_ATTR_WO(hall1_n);
+
+static ssize_t hall2_s_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			     size_t size)
+{
+	/* Reserved for keyboard status detection */
+	return size;
+}
+static DEVICE_ATTR_WO(hall2_s);
+
+static ssize_t acc_detect_debounce_ms_store(struct device *dev, struct device_attribute *attr,
+					    const char *buf, size_t size)
+{
+	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
+	unsigned int debounce_ms;
+	int ret;
+
+	if (kstrtouint(buf, 0, &debounce_ms))
+		return -EINVAL;
+
+	ret = gpio_set_debounce(pogo_transport->pogo_acc_gpio, debounce_ms * 1000);
+	if (ret < 0) {
+		dev_info(pogo_transport->dev, "failed to set debounce, ret:%d\n", ret);
+		pogo_transport->pogo_acc_gpio_debounce_ms = debounce_ms;
+	}
+
+	return size;
+}
+
+static ssize_t acc_detect_debounce_ms_show(struct device *dev, struct device_attribute *attr,
+					   char *buf)
+{
+	struct pogo_transport *pogo_transport  = dev_get_drvdata(dev);
+	return sysfs_emit(buf, "%u\n", pogo_transport->pogo_acc_gpio_debounce_ms);
+}
+static DEVICE_ATTR_RW(acc_detect_debounce_ms);
+
 static struct attribute *pogo_transport_attrs[] = {
 	&dev_attr_move_data_to_usb.attr,
 	&dev_attr_equal_priority.attr,
 	&dev_attr_pogo_usb_active.attr,
 	&dev_attr_force_pogo.attr,
 	&dev_attr_enable_hub.attr,
+	&dev_attr_hall1_s.attr,
+	&dev_attr_hall1_n.attr,
+	&dev_attr_hall2_s.attr,
+	&dev_attr_acc_detect_debounce_ms.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(pogo_transport);

@@ -59,4 +59,6 @@ amplifiers/cs35l45: | amplifiers/cs35l41
 
 ../devices/google/tangorpro/display: | display/samsung
 
+../devices/google/tangorpro/pogo: | bms
+
 include $(KERNEL_SRC)/Makefile.ext_modules.include
