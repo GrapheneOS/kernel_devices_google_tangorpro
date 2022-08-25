@@ -13,7 +13,9 @@
 		__overlay__ {
 
 			google_pogo: google,pogo {
+				/delete-property/ pogo-acc-capable;
 				/delete-property/ usb-hub-supply;
+				/delete-property/ acc-detect-supply;
 			};
 		};
 	};

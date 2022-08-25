@@ -17,10 +17,14 @@
 				status = "okay";
 				compatible = "pogo-transport";
 				pinctrl-names = "suspend-to-usb", "suspend-to-pogo", "hub";
-				pinctrl-0 = <&pogo_trans_stat &pogo_trans_pogo_sel_usb>;
-				pinctrl-1 = <&pogo_trans_stat &pogo_trans_pogo_sel_pogo
+				pinctrl-0 = <&pogo_trans_stat
+					     &pogo_trans_acc
+					     &pogo_trans_pogo_sel_usb>;
+				pinctrl-1 = <&pogo_trans_stat
+					     &pogo_trans_pogo_sel_pogo
 					     &pogo_trans_hub_sel_pogo>;
-				pinctrl-2 = <&pogo_trans_stat &pogo_trans_pogo_sel_hub
+				pinctrl-2 = <&pogo_trans_stat
+					     &pogo_trans_pogo_sel_hub
 					     &pogo_trans_hub_sel_hub>;
 				interrupt-parent = <&gpa8>;
 				pogo-transport-status = <&gpa8 3 GPIO_ACTIVE_LOW>;
@@ -34,7 +38,11 @@
 				pogo-hub-reset = <&gpp0 0 GPIO_ACTIVE_HIGH>;
 				pogo-hub-sel = <&gpp2 0 GPIO_ACTIVE_HIGH>;
 
+				pogo-acc-capable;
+				pogo-acc-detect = <&gpa8 2 GPIO_ACTIVE_HIGH>;
+
 				usb-hub-supply = <&s_ldo28_reg>;
+				acc-detect-supply = <&m_ldo26_reg>;
 			};
 		};
 	};
@@ -42,6 +50,13 @@
 
 /* GPIO_FAR_ALIVE */
 &pinctrl_1 {
+	pogo_trans_acc: pogo-transport-acc-detect {
+		samsung,pins = "gpa8-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+	};
+
 	pogo_trans_stat: pogo-transport-status {
 		samsung,pins = "gpa8-3";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
