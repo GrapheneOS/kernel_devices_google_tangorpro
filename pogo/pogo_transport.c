@@ -367,8 +367,8 @@ exit:
 free:
 	logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO,
 		       "evt:%d docked:%d force_u:%d force_p:%d pogo_usb:%d pogo_usb_active:%d data_active:%d vol_now:%d retry:%u",
-		       docked ? 1 : 0,
 		       event->event_type,
+		       docked ? 1 : 0,
 		       modparam_force_usb ? 1 : 0,
 		       pogo_transport->force_pogo ? 1 : 0,
 		       pogo_transport->pogo_usb_capable ? 1 : 0,
