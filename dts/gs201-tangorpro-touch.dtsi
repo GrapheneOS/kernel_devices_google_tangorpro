@@ -37,7 +37,9 @@
 	goog,wakeup-before-force-active-enabled;
 	goog,default-grip-disabled;
 	goog,default-palm-disabled;
-	//goog,offload-enabled;
+	goog,offload-caps-cancel-reporting;
+	goog,offload-caps-rotation-reporting;
+	goog,offload-enabled;
 	goog,v4l2-enabled;
 	goog,touch_offload_id = /bits/ 8 <'t' '6' '0' '0'>;
 	goog,display-resolution = /bits/ 16 <1600 2560>;
