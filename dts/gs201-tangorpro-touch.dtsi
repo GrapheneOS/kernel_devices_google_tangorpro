@@ -34,6 +34,7 @@
 	novatek,pen-support;
 	novatek,wgp-stylus;
 
+	goog,wakeup-before-force-active-enabled;
 	goog,default-grip-disabled;
 	goog,default-palm-disabled;
 	//goog,offload-enable;
