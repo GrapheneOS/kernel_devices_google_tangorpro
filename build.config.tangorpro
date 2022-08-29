@@ -20,12 +20,14 @@ MAKE_GOALS="$MAKE_GOALS
 modules
 google/devices/tangorpro/google-base/gs201-a0.dtb
 google/devices/tangorpro/google-base/gs201-b0.dtb
+google/devices/tangorpro/google-base/gs201-b0_v2-ipop.dtb
 google/devices/tangorpro/dtbo.img
 "
 
 FILES="
 arch/arm64/boot/dts/google/devices/tangorpro/google-base/gs201-a0.dtb
 arch/arm64/boot/dts/google/devices/tangorpro/google-base/gs201-b0.dtb
+arch/arm64/boot/dts/google/devices/tangorpro/google-base/gs201-b0_v2-ipop.dtb
 arch/arm64/boot/dts/google/devices/tangorpro/dtbo.img
 "
 
