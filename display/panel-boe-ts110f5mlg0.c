@@ -77,6 +77,13 @@ static const struct exynos_dsi_cmd ts110f5mlg0_init_cmds[] = {
 	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),
 	EXYNOS_DSI_CMD_SEQ(0x5B, 0x02),
 
+	/* Error flag detection */
+	EXYNOS_DSI_CMD_SEQ(0xD0, 0x31),
+	EXYNOS_DSI_CMD_SEQ(0xD1, 0x84),
+	EXYNOS_DSI_CMD_SEQ(0xD2, 0x30),
+	EXYNOS_DSI_CMD_SEQ(0xDE, 0x03),
+	EXYNOS_DSI_CMD_SEQ(0xDF, 0x02),
+
 	/* CMD2, Page4 */
 	EXYNOS_DSI_CMD_SEQ(0xFF, 0x24),
 	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),
