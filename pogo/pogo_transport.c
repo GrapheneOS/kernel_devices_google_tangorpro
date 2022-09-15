@@ -589,6 +589,74 @@ static int init_regulator(struct pogo_transport *pogo_transport)
 	return 0;
 }
 
+static int init_pogo_irqs(struct pogo_transport *pogo_transport)
+{
+	int ret;
+
+	/* initialize pogo status irq */
+	pogo_transport->pogo_irq = gpio_to_irq(pogo_transport->pogo_gpio);
+	if (pogo_transport->pogo_irq <= 0) {
+		dev_err(pogo_transport->dev, "Pogo irq not found\n");
+		return -ENODEV;
+	}
+
+	ret = devm_request_threaded_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_isr,
+					pogo_irq, (IRQF_SHARED | IRQF_ONESHOT |
+						   IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING),
+					dev_name(pogo_transport->dev), pogo_transport);
+	if (ret < 0) {
+		dev_err(pogo_transport->dev, "pogo-transport-status request irq failed ret:%d\n",
+			ret);
+		return ret;
+	}
+
+	pogo_transport->pogo_irq_enabled = true;
+
+	ret = enable_irq_wake(pogo_transport->pogo_irq);
+	if (ret) {
+		dev_err(pogo_transport->dev, "Enable irq wake failed ret:%d\n", ret);
+		goto free_status_irq;
+	}
+
+	if (!pogo_transport->pogo_acc_gpio)
+		return 0;
+
+	/* initialize pogo accessory irq */
+	pogo_transport->pogo_acc_irq = gpio_to_irq(pogo_transport->pogo_acc_gpio);
+	if (pogo_transport->pogo_acc_irq <= 0) {
+		dev_err(pogo_transport->dev, "Pogo acc irq not found\n");
+		ret = -ENODEV;
+		goto disable_status_irq_wake;
+	}
+
+	ret = devm_request_threaded_irq(pogo_transport->dev, pogo_transport->pogo_acc_irq,
+					pogo_acc_isr, pogo_acc_irq,
+					(IRQF_SHARED | IRQF_ONESHOT |
+					 IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING),
+					dev_name(pogo_transport->dev), pogo_transport);
+	if (ret < 0) {
+		dev_err(pogo_transport->dev, "pogo-acc-detect request irq failed ret:%d\n", ret);
+		goto disable_status_irq_wake;
+	}
+
+	ret = enable_irq_wake(pogo_transport->pogo_acc_irq);
+	if (ret) {
+		dev_err(pogo_transport->dev, "Enable acc irq wake failed ret:%d\n", ret);
+		goto free_acc_irq;
+	}
+
+	return 0;
+
+free_acc_irq:
+	devm_free_irq(pogo_transport->dev, pogo_transport->pogo_acc_irq, pogo_transport);
+disable_status_irq_wake:
+	disable_irq_wake(pogo_transport->pogo_irq);
+free_status_irq:
+	devm_free_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_transport);
+
+	return ret;
+}
+
 static int init_acc_gpio(struct pogo_transport *pogo_transport)
 {
 	int ret;
@@ -622,29 +690,7 @@ static int init_acc_gpio(struct pogo_transport *pogo_transport)
 		pogo_transport->pogo_acc_gpio_debounce_ms = POGO_ACC_GPIO_DEBOUNCE_MS;
 	}
 
-	pogo_transport->pogo_acc_irq = gpio_to_irq(pogo_transport->pogo_acc_gpio);
-	if (pogo_transport->pogo_acc_irq <= 0) {
-		dev_err(pogo_transport->dev, "Pogo acc irq not found\n");
-		return -ENODEV;
-	}
-
-	ret = devm_request_threaded_irq(pogo_transport->dev, pogo_transport->pogo_acc_irq,
-					pogo_acc_isr, pogo_acc_irq,
-					(IRQF_SHARED | IRQF_ONESHOT |
-					 IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING),
-					dev_name(pogo_transport->dev), pogo_transport);
-	if (ret < 0) {
-		dev_err(pogo_transport->dev, "pogo-acc-detect request irq failed ret:%d\n", ret);
-		return ret;
-	}
-
-	ret = enable_irq_wake(pogo_transport->pogo_acc_irq);
-	if (ret) {
-		dev_err(pogo_transport->dev, "Enable acc irq wake failed ret:%d\n", ret);
-		devm_free_irq(pogo_transport->dev, pogo_transport->pogo_acc_irq, pogo_transport);
-	}
-
-	return ret;
+	return 0;
 }
 
 static int init_hub_gpio(struct pogo_transport *pogo_transport)
@@ -677,9 +723,9 @@ static int init_hub_gpio(struct pogo_transport *pogo_transport)
 
 static int init_pogo_gpio(struct pogo_transport *pogo_transport)
 {
-	enum of_gpio_flags flags;
 	int ret;
 
+	/* initialize pogo status gpio */
 	pogo_transport->pogo_gpio = of_get_named_gpio(pogo_transport->dev->of_node,
 						      "pogo-transport-status", 0);
 	if (pogo_transport->pogo_gpio < 0) {
@@ -705,30 +751,31 @@ static int init_pogo_gpio(struct pogo_transport *pogo_transport)
 		return ret;
 	}
 
-	pogo_transport->pogo_irq = gpio_to_irq(pogo_transport->pogo_gpio);
-	if (pogo_transport->pogo_irq <= 0) {
-		dev_err(pogo_transport->dev, "Pogo irq not found\n");
-		return -ENODEV;
+	/* initialize data mux gpio */
+	pogo_transport->pogo_data_mux_gpio = of_get_named_gpio(pogo_transport->dev->of_node,
+							       "pogo-transport-sel", 0);
+	if (pogo_transport->pogo_data_mux_gpio < 0) {
+		dev_err(pogo_transport->dev, "Pogo sel gpio not found ret:%d\n",
+			pogo_transport->pogo_data_mux_gpio);
+		return pogo_transport->pogo_data_mux_gpio;
 	}
 
-	ret = devm_request_threaded_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_isr,
-					pogo_irq, (IRQF_SHARED | IRQF_ONESHOT |
-						   IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING),
-					dev_name(pogo_transport->dev), pogo_transport);
-	if (ret < 0) {
-		dev_err(pogo_transport->dev, "pogo-transport-status request irq failed ret:%d\n",
+	ret = devm_gpio_request(pogo_transport->dev, pogo_transport->pogo_data_mux_gpio,
+				"pogo-transport-sel");
+	if (ret) {
+		dev_err(pogo_transport->dev, "failed to request pogo-transport-sel gpio, ret:%d\n",
 			ret);
 		return ret;
 	}
 
-	pogo_transport->pogo_irq_enabled = true;
-
-	ret = enable_irq_wake(pogo_transport->pogo_irq);
+	ret = gpio_direction_output(pogo_transport->pogo_data_mux_gpio, 0);
 	if (ret) {
-		dev_err(pogo_transport->dev, "Enable irq wake failed ret:%d\n", ret);
-		goto free_irq;
+		dev_err(pogo_transport->dev, "failed set pogo-transport-sel as output, ret:%d\n",
+			ret);
+		return ret;
 	}
 
+	/* pinctrl for usb-c path*/
 	pogo_transport->pinctrl = devm_pinctrl_get_select(pogo_transport->dev, "suspend-to-usb");
 	if (IS_ERR(pogo_transport->pinctrl)) {
 		dev_err(pogo_transport->dev, "failed to allocate pinctrl ret:%ld\n",
@@ -744,6 +791,7 @@ static int init_pogo_gpio(struct pogo_transport *pogo_transport)
 		return PTR_ERR(pogo_transport->susp_usb_state);
 	}
 
+	/* pinctrl for pogo path */
 	pogo_transport->susp_pogo_state = pinctrl_lookup_state(pogo_transport->pinctrl,
 							       "suspend-to-pogo");
 	if (IS_ERR(pogo_transport->susp_pogo_state)) {
@@ -752,47 +800,25 @@ static int init_pogo_gpio(struct pogo_transport *pogo_transport)
 		return PTR_ERR(pogo_transport->susp_pogo_state);
 	}
 
-	pogo_transport->pogo_data_mux_gpio = of_get_named_gpio(pogo_transport->dev->of_node,
-							       "pogo-transport-sel", 0);
-	if (pogo_transport->pogo_data_mux_gpio < 0) {
-		dev_err(pogo_transport->dev, "Pogo sel gpio not found ret:%d\n",
-			pogo_transport->pogo_data_mux_gpio);
-		ret = pogo_transport->pogo_data_mux_gpio;
-		goto disable_irq;
-	}
+	return 0;
+}
 
-	ret = devm_gpio_request(pogo_transport->dev, pogo_transport->pogo_data_mux_gpio,
-				"pogo-transport-sel");
-	if (ret) {
-		dev_err(pogo_transport->dev, "failed to request pogo-transport-sel gpio, ret:%d\n",
-			ret);
-		goto disable_irq;
-	}
-
-	ret = gpio_direction_output(pogo_transport->pogo_data_mux_gpio, 0);
-	if (ret) {
-		dev_err(pogo_transport->dev, "failed set pogo-transport-sel as output, ret:%d\n",
-			ret);
-		goto disable_irq;
-	}
-
-	pogo_transport->equal_priority = of_property_read_bool(pogo_transport->dev->of_node,
-							       "equal-priority");
-
+static int init_pogo_ovp_gpio(struct pogo_transport *pogo_transport)
+{
+	enum of_gpio_flags flags;
+	int ret;
 
 	if (!of_property_read_bool(pogo_transport->dev->of_node, "pogo-ovp-en")) {
 		pogo_transport->pogo_ovp_en_gpio = -EINVAL;
-		goto exit;
+		return 0;
 	}
 
 	pogo_transport->pogo_ovp_en_gpio = of_get_named_gpio_flags(pogo_transport->dev->of_node,
 								   "pogo-ovp-en", 0, &flags);
 	if (pogo_transport->pogo_ovp_en_gpio < 0) {
-		dev_err(pogo_transport->dev,
-			"Pogo ovp en gpio not found. ret:%d\n",
+		dev_err(pogo_transport->dev, "Pogo ovp en gpio not found. ret:%d\n",
 			pogo_transport->pogo_ovp_en_gpio);
-		ret = pogo_transport->pogo_ovp_en_gpio;
-		goto disable_irq;
+		return pogo_transport->pogo_ovp_en_gpio;
 	}
 
 	pogo_transport->pogo_ovp_en_active_state = (flags & OF_GPIO_ACTIVE_LOW) ? 0 : 1;
@@ -800,28 +826,19 @@ static int init_pogo_gpio(struct pogo_transport *pogo_transport)
 	ret = devm_gpio_request(pogo_transport->dev, pogo_transport->pogo_ovp_en_gpio,
 				"pogo-ovp-en");
 	if (ret) {
-		dev_err(pogo_transport->dev, "failed to request pogo-ovp-en gpio, ret:%d\n",
-			ret);
-		goto disable_irq;
+		dev_err(pogo_transport->dev, "failed to request pogo-ovp-en gpio, ret:%d\n", ret);
+		return ret;
 	}
 
 	/* Default disable pogo ovp. Set to disable state for pogo_ovp_en */
 	ret = gpio_direction_output(pogo_transport->pogo_ovp_en_gpio,
 				    !pogo_transport->pogo_ovp_en_active_state);
 	if (ret) {
-		dev_err(pogo_transport->dev, "failed set pogo-ovp-en as output, ret:%d\n",
-			ret);
-		goto disable_irq;
+		dev_err(pogo_transport->dev, "failed set pogo-ovp-en as output, ret:%d\n", ret);
+		return ret;
 	}
-exit:
+
 	return 0;
-
-disable_irq:
-	disable_irq_wake(pogo_transport->pogo_irq);
-free_irq:
-	devm_free_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_transport);
-
-	return ret;
 }
 
 static int pogo_transport_probe(struct platform_device *pdev)
@@ -915,6 +932,15 @@ static int pogo_transport_probe(struct platform_device *pdev)
 		goto psy_put;
 	}
 
+	pogo_transport->equal_priority = of_property_read_bool(pogo_transport->dev->of_node,
+							       "equal-priority");
+
+	ret = init_pogo_ovp_gpio(pogo_transport);
+	if (ret) {
+		dev_err(pogo_transport->dev, "init_pogo_ovp_gpio error:%d\n", ret);
+		goto psy_put;
+	}
+
 	ret = init_pogo_gpio(pogo_transport);
 	if (ret) {
 		dev_err(pogo_transport->dev, "init_pogo_gpio error:%d\n", ret);
@@ -925,13 +951,19 @@ static int pogo_transport_probe(struct platform_device *pdev)
 	if (pogo_transport->hub_embedded) {
 		ret = init_hub_gpio(pogo_transport);
 		if (ret)
-			goto free_pogo_irq;
+			goto psy_put;
 	}
 
 	if (of_property_read_bool(dn, "pogo-acc-capable")) {
 		ret = init_acc_gpio(pogo_transport);
 		if (ret)
-			goto free_pogo_irq;
+			goto psy_put;
+	}
+
+	ret = init_pogo_irqs(pogo_transport);
+	if (ret) {
+		dev_err(pogo_transport->dev, "init_pogo_irqs error:%d\n", ret);
+		goto psy_put;
 	}
 
 	register_data_active_callback(data_active_changed, pogo_transport);
@@ -940,9 +972,6 @@ static int pogo_transport_probe(struct platform_device *pdev)
 	of_node_put(data_np);
 	return 0;
 
-free_pogo_irq:
-	disable_irq_wake(pogo_transport->pogo_irq);
-	devm_free_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_transport);
 psy_put:
 	power_supply_put(pogo_transport->pogo_psy);
 destroy_worker:
