@@ -58,3 +58,10 @@
 	status = "disabled";
 };
 
+// Configurate gpp2-1 as default input and pull-down
+&hsi2c1_bus {
+	samsung,pins = "gpp2-1";
+	samsung,pin-function = <0>;
+	samsung,pin-pud = <1>;
+};
+
