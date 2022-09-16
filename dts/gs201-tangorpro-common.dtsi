@@ -65,3 +65,7 @@
 	samsung,pin-pud = <1>;
 };
 
+// Disabled hsi2c_1 due to no module stmvl53l1 (ldaf-irq)
+&hsi2c_1 {
+	status = "disabled";
+};
