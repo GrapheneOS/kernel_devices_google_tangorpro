@@ -16,7 +16,7 @@
 	};
 
 	hsi2c2_bus_in: hsi2c2-bus-in {
-		samsung,pins = "gpp4-0", "gpp4-1";
+		samsung,pins = "gpp4-0", "gpp4-1", "gpp4-2";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
@@ -27,7 +27,7 @@
 	};
 
 	hsi2c3_bus_in: hsi2c3-bus-in {
-		samsung,pins = "gpp6-0", "gpp6-1";
+		samsung,pins = "gpp6-0", "gpp6-1", "gpp6-3";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
