@@ -116,6 +116,8 @@ struct pogo_transport {
 	unsigned int retry_count;
 	/* To signal userspace extcon observer */
 	struct extcon_dev *extcon;
+	/* When true, disable voltage based detection of pogo partners */
+	bool disable_voltage_detection;
 };
 
 static const unsigned int pogo_extcon_cable[] = {
@@ -305,7 +307,8 @@ static void update_pogo_transport(struct kthread_work *work)
 
 	if (event->event_type == EVENT_DOCKING || event->event_type == EVENT_RETRY_READ_VOLTAGE) {
 		if (docked) {
-			if (voltage_now.intval >= POGO_USB_CAPABLE_THRESHOLD_UV) {
+			if (pogo_transport->disable_voltage_detection ||
+			    voltage_now.intval >= POGO_USB_CAPABLE_THRESHOLD_UV) {
 				pogo_transport->pogo_usb_capable = true;
 				update_extcon_dev(pogo_transport, true, true);
 			} else {
@@ -959,6 +962,9 @@ static int pogo_transport_probe(struct platform_device *pdev)
 		if (ret)
 			goto psy_put;
 	}
+
+	pogo_transport->disable_voltage_detection =
+		of_property_read_bool(dn, "disable-voltage-detection");
 
 	ret = init_pogo_irqs(pogo_transport);
 	if (ret) {
