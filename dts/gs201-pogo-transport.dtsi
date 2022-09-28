@@ -43,6 +43,8 @@
 
 				usb-hub-supply = <&s_ldo28_reg>;
 				acc-detect-supply = <&m_ldo26_reg>;
+
+				disable-voltage-detection;
 			};
 		};
 	};
