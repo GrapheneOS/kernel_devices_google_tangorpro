@@ -25,6 +25,7 @@
 #define RT4539_REG03				(0x03)
 #define RT4539_REG04				(0x04)
 #define RT4539_REG05				(0x05)
+#define RT4539_REG06				(0x06)
 #define RT4539_REG07				(0x07)
 #define RT4539_REG09				(0x09)
 #define RT4539_REG0A				(0x0A)
@@ -37,6 +38,11 @@
 #define RT4539_REG03_ILED_MAPPING_MASK		(0x80)
 #define RT4539_REG03_ILED_MAPPING_SHIFT		(7)
 #define RT4539_REG04_BRIGHTNESS_MSB_MASK	(0x0F)
+#define RT4539_REG06_FADE_IN_OUT_TIME_CTRL_MASK	(0x07)
+#define RT4539_REG06_SLOPE_TIME_CTRL_MASK	(0x38)
+#define RT4539_REG06_SLOPE_TIME_CTRL_SHIFT	(3)
+#define RT4539_REG06_SLOPE_TIME_FILTER_MASK	(0xC0)
+#define RT4539_REG06_SLOPE_TIME_FILTER_SHIFT	(6)
 #define RT4539_REG07_ADV_BRIGHT_CTRL_MASK	(0x03)
 #define RT4539_REG09_PFM_ENABLE_MASK		(0x01)
 #define RT4539_REG09_LED_UNUSED_CHECK_MASK	(0x80)
@@ -166,6 +172,16 @@ static int rt4539_configure(struct rt4539 *rt, u32 brightness)
 
 	/* set brightness */
 	ret = rt4539_set_brightness(rt, brightness);
+	if (ret < 0)
+		return ret;
+
+	/* Set fade in/out time control, slope time control and filter */
+	data = rt->pdata->fade_in_out_time_control & RT4539_REG06_FADE_IN_OUT_TIME_CTRL_MASK;
+	data |= (rt->pdata->slope_time_control << RT4539_REG06_SLOPE_TIME_CTRL_SHIFT) &
+		RT4539_REG06_SLOPE_TIME_CTRL_MASK;
+	data |= (rt->pdata->slope_time_filter << RT4539_REG06_SLOPE_TIME_FILTER_SHIFT) &
+		RT4539_REG06_SLOPE_TIME_FILTER_MASK;
+	ret = rt4539_write_byte(rt, RT4539_REG06, data);
 	if (ret < 0)
 		return ret;
 
@@ -391,6 +407,10 @@ static int rt4539_parse_dt(struct rt4539 *rt)
 	dev_info(dev, "%u bits brightness resolution\n", resolution);
 
 	of_property_read_u8(node, "dimming-mode", &pdata->dimming_mode);
+	of_property_read_u8(node, "fade-in-out-time-ctrl",
+		&pdata->fade_in_out_time_control);
+	of_property_read_u8(node, "slope-time-ctrl", &pdata->slope_time_control);
+	of_property_read_u8(node, "slope-time-filter", &pdata->slope_time_filter);
 	of_property_read_u8(node, "boost-switch-freq", &pdata->boost_switch_freq);
 	of_property_read_u8(node, "current-max", &pdata->current_max);
 	of_property_read_u8(node, "brightness-control",

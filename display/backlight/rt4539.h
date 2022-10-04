@@ -20,6 +20,9 @@ enum rt4539_chip_id {
  * @boost_switch_freq: value of boost switching frequency
  * @current_max : value of MAX_CURRENT register
  * @brightness_control: value of advanced brightness control field
+ * @fade_in_out_time_control: value of fade in/out time
+ * @slope_time_control: transition time of brightness value
+ * @slope_time_filter: how smoothness of the slope time
  * @enabled_leds : value of LED enabled bits
  * @initial_brightness : initial value of backlight brightness
  * @boost_ovp_selection : value of boost output over voltage protection
@@ -35,6 +38,9 @@ struct rt4539_platform_data {
 	u8 boost_switch_freq;
 	u8 current_max;
 	u8 brightness_control;
+	u8 fade_in_out_time_control;
+	u8 slope_time_control;
+	u8 slope_time_filter;
 	u8 enabled_leds;
 	u16 initial_brightness;
 	u8 boost_ovp_selection;
