@@ -165,6 +165,7 @@
 					 0
 					 0
 					 0>;
+				transaction-thread-priority = <99>;
 			};
 
 			/* FRONT CAMERA IMX355 */
@@ -250,6 +251,7 @@
 					 0
 					 0
 					 0>;
+				transaction-thread-priority = <99>;
 			};
 
 			/* Eeprom m24c64s for imx355-rear */
