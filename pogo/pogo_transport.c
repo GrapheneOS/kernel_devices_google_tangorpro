@@ -5,6 +5,7 @@
  * Pogo management driver
  */
 
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/extcon.h>
 #include <linux/extcon-provider.h>
@@ -58,6 +59,9 @@ enum pogo_event_type {
 	/* 10 */
 	EVENT_POGO_ACC_DETECTED,
 	EVENT_POGO_ACC_CONNECTED,
+	/* Bypass the accessory detection and enable POGO Vout and POGO USB capability */
+	/* This event is for debug only and never used in normal operations. */
+	EVENT_FORCE_ACC_CONNECT,
 };
 
 static bool modparam_force_usb;
@@ -109,6 +113,11 @@ struct pogo_transport {
 	bool hall1_s_state;
 	/* When true, the path won't switch to pogo if accessory is attached */
 	bool mfg_acc_test;
+	/*
+	 * When true, skip acc detection and POGO Vout as well as POGO USB will be enabled.
+	 * Only applicable for debugfs capable builds.
+	 */
+	bool mock_hid_connected;
 	struct kthread_worker *wq;
 	/* To read voltage at the pogo pins */
 	struct power_supply *pogo_psy;
@@ -349,6 +358,20 @@ static void update_pogo_transport(struct kthread_work *work)
 		goto exit;
 	}
 
+	if (pogo_transport->mock_hid_connected) {
+		switch (event->event_type) {
+		case EVENT_ENABLE_HUB:
+		case EVENT_DISABLE_HUB:
+		case EVENT_FORCE_ACC_CONNECT:
+		case EVENT_HALL_SENSOR_ACC_UNDOCKED:
+			break;
+		default:
+			logbuffer_log(pogo_transport->log, "%s: skipping mock_hid_connected set",
+				      __func__);
+			goto exit;
+		}
+	}
+
 	switch (event->event_type) {
 	case EVENT_DOCKING:
 	case EVENT_RETRY_READ_VOLTAGE:
@@ -398,6 +421,7 @@ static void update_pogo_transport(struct kthread_work *work)
 		}
 		break;
 	case EVENT_HALL_SENSOR_ACC_UNDOCKED:
+		pogo_transport->mock_hid_connected = 0;
 		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 0);
 		if (ret)
 			logbuffer_log(pogo_transport->log, "%s: Failed to disable pogo_vout %d\n",
@@ -451,6 +475,35 @@ static void update_pogo_transport(struct kthread_work *work)
 			}
 		}
 		break;
+#ifdef CONFIG_DEBUG_FS
+	case EVENT_FORCE_ACC_CONNECT:
+		if (pogo_transport->pogo_irq_enabled) {
+			disable_irq(pogo_transport->pogo_irq);
+			pogo_transport->pogo_irq_enabled = false;
+		}
+
+		if (pogo_transport->pogo_ovp_en_gpio >= 0)
+			gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
+						!pogo_transport->pogo_ovp_en_active_state);
+
+		/* Disable, just in case when docked, if acc_detect_ldo was on */
+		if (pogo_transport->acc_detect_ldo &&
+		    regulator_is_enabled(pogo_transport->acc_detect_ldo)) {
+			ret = regulator_disable(pogo_transport->acc_detect_ldo);
+			if (ret)
+				logbuffer_log(pogo_transport->log,
+					      "%s: Failed to disable acc_detect %d", __func__, ret);
+		}
+
+		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to enable pogo_vout %d\n",
+				      __func__, ret);
+
+		switch_to_pogo_locked(pogo_transport);
+		pogo_transport->pogo_usb_capable = true;
+		break;
+#endif
 	default:
 		break;
 	}
@@ -460,7 +513,7 @@ exit:
 	kobject_uevent(&pogo_transport->dev->kobj, KOBJ_CHANGE);
 free:
 	logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO,
-		       "evt:%d docked:%d force_u:%d force_p:%d pogo_usb:%d pogo_usb_active:%d data_active:%d vol_now:%d retry:%u",
+		       "evt:%d docked:%d force_u:%d force_p:%d pogo_usb:%d pogo_usb_active:%d data_active:%d vol_now:%d retry:%u mock_hid:%u",
 		       event->event_type,
 		       docked ? 1 : 0,
 		       modparam_force_usb ? 1 : 0,
@@ -469,7 +522,8 @@ free:
 		       pogo_transport->pogo_usb_active ? 1 : 0,
 		       chip->data_active ? 1 : 0,
 		       voltage_now.intval,
-		       pogo_transport->retry_count);
+		       pogo_transport->retry_count,
+		       pogo_transport->mock_hid_connected);
 
 	devm_kfree(pogo_transport->dev, event);
 }
@@ -567,6 +621,51 @@ static irqreturn_t pogo_isr(int irq, void *dev_id)
 
 	return IRQ_WAKE_THREAD;
 }
+
+#ifdef CONFIG_DEBUG_FS
+static int mock_hid_connected_set(void *data, u64 val)
+{
+	struct pogo_transport *pogo_transport = data;
+
+	pogo_transport->mock_hid_connected = !!val;
+
+	logbuffer_log(pogo_transport->log, "%s: %u", __func__, pogo_transport->mock_hid_connected);
+
+	if (pogo_transport->mock_hid_connected)
+		pogo_transport_event(pogo_transport, EVENT_FORCE_ACC_CONNECT, 0);
+	else
+		pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_UNDOCKED, 0);
+
+	return 0;
+}
+
+static int mock_hid_connected_get(void *data, u64 *val)
+{
+	struct pogo_transport *pogo_transport = data;
+
+	*val = (u64)pogo_transport->mock_hid_connected;
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(mock_hid_connected_fops, mock_hid_connected_get, mock_hid_connected_set,
+			"%llu\n");
+
+static void pogo_transport_init_debugfs(struct pogo_transport *pogo_transport)
+{
+	struct dentry *dentry;
+
+	dentry = debugfs_create_dir("pogo_transport", NULL);
+
+	if (IS_ERR(dentry)) {
+		dev_err(pogo_transport->dev, "debugfs dentry failed: %ld", PTR_ERR(dentry));
+		return;
+	}
+
+	debugfs_create_file("mock_hid_connected", 0644, dentry, pogo_transport,
+			    &mock_hid_connected_fops);
+}
+#endif
 
 static int init_regulator(struct pogo_transport *pogo_transport)
 {
@@ -972,6 +1071,10 @@ static int pogo_transport_probe(struct platform_device *pdev)
 		goto psy_put;
 	}
 
+#ifdef CONFIG_DEBUG_FS
+	pogo_transport_init_debugfs(pogo_transport);
+#endif
+
 	register_data_active_callback(data_active_changed, pogo_transport);
 	dev_info(&pdev->dev, "force usb:%d\n", modparam_force_usb ? 1 : 0);
 	put_device(&data_client->dev);
@@ -994,6 +1097,17 @@ free_np:
 static int pogo_transport_remove(struct platform_device *pdev)
 {
 	struct pogo_transport *pogo_transport = platform_get_drvdata(pdev);
+	struct dentry *dentry;
+
+#ifdef CONFIG_DEBUG_FS
+	dentry = debugfs_lookup("pogo_transport", NULL);
+	if (IS_ERR(dentry)) {
+		dev_err(pogo_transport->dev, "%s: Failed to lookup debugfs dir\n", __func__);
+	} else {
+		debugfs_remove(dentry);
+		dput(dentry);
+	}
+#endif
 
 	if (pogo_transport->hub_ldo && regulator_is_enabled(pogo_transport->hub_ldo) > 0)
 		regulator_disable(pogo_transport->hub_ldo);
