@@ -485,7 +485,7 @@ static void update_pogo_transport(struct kthread_work *work)
 			}
 		}
 		break;
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	case EVENT_FORCE_ACC_CONNECT:
 		if (pogo_transport->pogo_irq_enabled) {
 			disable_irq(pogo_transport->pogo_irq);
@@ -632,7 +632,7 @@ static irqreturn_t pogo_isr(int irq, void *dev_id)
 	return IRQ_WAKE_THREAD;
 }
 
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 static int mock_hid_connected_set(void *data, u64 val)
 {
 	struct pogo_transport *pogo_transport = data;
@@ -1081,7 +1081,7 @@ static int pogo_transport_probe(struct platform_device *pdev)
 		goto psy_put;
 	}
 
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	pogo_transport_init_debugfs(pogo_transport);
 #endif
 
@@ -1109,7 +1109,7 @@ static int pogo_transport_remove(struct platform_device *pdev)
 	struct pogo_transport *pogo_transport = platform_get_drvdata(pdev);
 	struct dentry *dentry;
 
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	dentry = debugfs_lookup("pogo_transport", NULL);
 	if (IS_ERR(dentry)) {
 		dev_err(pogo_transport->dev, "%s: Failed to lookup debugfs dir\n", __func__);
