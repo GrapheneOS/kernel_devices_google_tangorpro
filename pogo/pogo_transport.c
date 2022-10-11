@@ -374,6 +374,16 @@ static void update_pogo_transport(struct kthread_work *work)
 	case EVENT_MOVE_DATA_TO_POGO:
 		/* Currently this event is bundled to force_pogo. This case is unreachable. */
 		break;
+	case EVENT_DATA_ACTIVE_CHANGED:
+		/* Do nothing if USB-C data becomes active or hub is enabled. */
+		if ((chip->data_active && pogo_transport->equal_priority) ||
+		    pogo_transport->pogo_hub_active)
+			break;
+
+		/* Switch to POGO if POGO path is available. */
+		if (pogo_transport->pogo_usb_capable && !pogo_transport->pogo_usb_active)
+			switch_to_pogo_locked(pogo_transport);
+		break;
 	case EVENT_ENABLE_HUB:
 		pogo_transport->pogo_usb_capable = true;
 		switch_to_hub_locked(pogo_transport);
