@@ -38,6 +38,7 @@
 	goog,default-grip-disabled;
 	goog,default-palm-disabled;
 	goog,offload-caps-cancel-reporting;
+	goog,offload-caps-context-channel-types = /bits/ 16 <0x0300>;
 	goog,offload-caps-rotation-reporting;
 	goog,offload-enabled;
 	goog,v4l2-enabled;
