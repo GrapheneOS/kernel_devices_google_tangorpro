@@ -298,6 +298,7 @@ static const struct exynos_panel_desc csot_ppa957db2d = {
 	.data_lane_cnt = 4,
 	.max_brightness = 4095,
 	.min_brightness = 16,
+	.lower_min_brightness = 4,
 	.dft_brightness = 1146,
 	/* supported HDR format bitmask : 1(DOLBY_VISION), 2(HDR10), 3(HLG) */
 	.hdr_formats = BIT(2) | BIT(3),
