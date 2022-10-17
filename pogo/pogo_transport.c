@@ -109,6 +109,8 @@ struct pogo_transport {
 	bool force_pogo;
 	/* When true, pogo irq is enabled */
 	bool pogo_irq_enabled;
+	/* When true, acc irq is enabled */
+	bool acc_irq_enabled;
 	/* When true, hall1_s sensor reports attach event */
 	bool hall1_s_state;
 	/* When true, the path won't switch to pogo if accessory is attached */
@@ -450,6 +452,11 @@ static void update_pogo_transport(struct kthread_work *work)
 			pogo_transport->pogo_irq_enabled = true;
 		}
 
+		if (!pogo_transport->acc_irq_enabled) {
+			enable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = true;
+		}
+
 		switch_to_usbc_locked(pogo_transport);
 		pogo_transport->pogo_usb_capable = false;
 		break;
@@ -459,6 +466,11 @@ static void update_pogo_transport(struct kthread_work *work)
 		if (!acc_detected) {
 			pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_UNDOCKED, 0);
 			break;
+		}
+
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
 		}
 
 		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
@@ -490,6 +502,11 @@ static void update_pogo_transport(struct kthread_work *work)
 		if (pogo_transport->pogo_irq_enabled) {
 			disable_irq(pogo_transport->pogo_irq);
 			pogo_transport->pogo_irq_enabled = false;
+		}
+
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
 		}
 
 		if (pogo_transport->pogo_ovp_en_gpio >= 0)
@@ -750,6 +767,8 @@ static int init_pogo_irqs(struct pogo_transport *pogo_transport)
 		dev_err(pogo_transport->dev, "pogo-acc-detect request irq failed ret:%d\n", ret);
 		goto disable_status_irq_wake;
 	}
+
+	pogo_transport->acc_irq_enabled = true;
 
 	ret = enable_irq_wake(pogo_transport->pogo_acc_irq);
 	if (ret) {
