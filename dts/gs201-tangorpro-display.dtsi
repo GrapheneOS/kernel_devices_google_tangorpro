@@ -54,6 +54,15 @@
 		/* 1225kHz */
 		boost-switch-freq = /bits/ 8 <0x0c>;
 
+		/* 0.5 us */
+		fade-in-out-time-ctrl = /bits/ 8 <0x00>;
+
+		/* 8 ms */
+		slope-time-ctrl = /bits/ 8 <0x02>;
+
+		/* no filter */
+		slope-time-filter = /bits/ 8 <0x00>;
+
 		/* max current 23mA */
 		current-max = /bits/ 8 <0x9b>;
 
