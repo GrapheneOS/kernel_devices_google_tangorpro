@@ -165,6 +165,9 @@
 					 0
 					 0
 					 0>;
+				transaction-thread-priority = <99>;
+
+				i2c-lock-group-id = <0>;
 			};
 
 			/* FRONT CAMERA IMX355 */
@@ -250,6 +253,9 @@
 					 0
 					 0
 					 0>;
+				transaction-thread-priority = <99>;
+
+				i2c-lock-group-id = <1>;
 			};
 
 			/* Eeprom m24c64s for imx355-rear */
@@ -287,6 +293,8 @@
 					"regulator";
 				power-down-seq-delays-us =
 					<1000>;
+
+				i2c-lock-group-id = <0>;
 			};
 
 			/* Eeprom m24c64s for imx355 */
@@ -324,6 +332,8 @@
 					"regulator";
 				power-down-seq-delays-us =
 					<1000>;
+
+				i2c-lock-group-id = <1>;
 			};
 		};
 	};

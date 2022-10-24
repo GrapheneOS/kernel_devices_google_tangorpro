@@ -61,8 +61,8 @@ static const struct exynos_dsi_cmd ppa957db2d_init_cmds[] = {
 	EXYNOS_DSI_CMD_SEQ(0xB9, 0x02),
 	EXYNOS_DSI_CMD_SEQ(0x51, 0x0F, 0xFF),
 	EXYNOS_DSI_CMD_SEQ(0x53, 0x24),
-	/* 0x01: CABC UI-Mode */
-	EXYNOS_DSI_CMD_SEQ(0x55, 0x01),
+	/* CABC initial OFF */
+	EXYNOS_DSI_CMD_SEQ(0x55, 0x00),
 	/* BBh (MIPI via/bypass RAM) */
 	EXYNOS_DSI_CMD_SEQ(0xBB, 0x13),
 	/* VBP + VFP = 200 + 26 = 226 */
@@ -116,6 +116,29 @@ static int ppa957db2d_prepare(struct drm_panel *panel)
 	dev_dbg(ctx->dev, "%s -\n", __func__);
 
 	return 0;
+}
+
+static void ts110f5mlg0_set_cabc_mode(struct exynos_panel *ctx,
+					enum exynos_cabc_mode cabc_mode)
+{
+	u8 mode;
+
+	switch (cabc_mode) {
+	case CABC_UI_MODE:
+		mode = 0x01;
+		break;
+	case CABC_STILL_MODE:
+		mode = 0x02;
+		break;
+	case CABC_MOVIE_MODE:
+		mode = 0x03;
+		break;
+	default:
+		mode = 0x00;
+	}
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0x55, mode);
+
+	dev_dbg(ctx->dev, "%s CABC state: %u\n", __func__, mode);
 }
 
 static int ppa957db2d_enable(struct drm_panel *panel)
@@ -250,6 +273,7 @@ static const struct exynos_panel_funcs ppa957db2d_exynos_funcs = {
 	.panel_reset = ppa957db2d_reset,
 	.set_dimming_on = ppa957db2d_set_dimming_on,
 	.set_brightness = exynos_panel_set_brightness,
+	.set_cabc_mode = ts110f5mlg0_set_cabc_mode,
 	.get_panel_rev = ppa957db2d_get_panel_rev,
 };
 
@@ -274,6 +298,7 @@ static const struct exynos_panel_desc csot_ppa957db2d = {
 	.data_lane_cnt = 4,
 	.max_brightness = 4095,
 	.min_brightness = 16,
+	.lower_min_brightness = 4,
 	.dft_brightness = 1146,
 	/* supported HDR format bitmask : 1(DOLBY_VISION), 2(HDR10), 3(HLG) */
 	.hdr_formats = BIT(2) | BIT(3),

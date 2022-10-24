@@ -127,8 +127,8 @@ static const struct exynos_dsi_cmd ts110f5mlg0_init_cmds[] = {
 	EXYNOS_DSI_CMD_SEQ(0xB9, 0x02),
 	EXYNOS_DSI_CMD_SEQ(0x51, 0x0F, 0xFF),
 	EXYNOS_DSI_CMD_SEQ(0x53, 0x24),
-	/* 0x01: CABC default UI Mode */
-	EXYNOS_DSI_CMD_SEQ(0x55, 0x01),
+	/* CABC initial OFF */
+	EXYNOS_DSI_CMD_SEQ(0x55, 0x00),
 	/* BBh (MIPI via/bypass RAM) */
 	EXYNOS_DSI_CMD_SEQ(0xBB, 0x13),
 	/* VBP + VFP = 200 + 26 = 226 */
@@ -200,16 +200,24 @@ static int ts110f5mlg0_enable(struct drm_panel *panel)
 static void ts110f5mlg0_set_cabc_mode(struct exynos_panel *ctx,
 					enum exynos_cabc_mode cabc_mode)
 {
-	ctx->cabc_mode = cabc_mode;
-	if (cabc_mode == CABC_OFF)
-		EXYNOS_DCS_WRITE_SEQ(ctx, 0x55, 0x00);
-	else if (cabc_mode == CABC_UI_MODE)
-		EXYNOS_DCS_WRITE_SEQ(ctx, 0x55, 0x01);
-	else if (cabc_mode == CABC_STILL_MODE)
-		EXYNOS_DCS_WRITE_SEQ(ctx, 0x55, 0x02);
-	else if (cabc_mode == CABC_MOVIE_MODE)
-		EXYNOS_DCS_WRITE_SEQ(ctx, 0x55, 0x03);
-	dev_dbg(ctx->dev, "%s CABC_Mode : %d\n", __func__, cabc_mode);
+	u8 mode;
+
+	switch (cabc_mode) {
+	case CABC_UI_MODE:
+		mode = 0x01;
+		break;
+	case CABC_STILL_MODE:
+		mode = 0x02;
+		break;
+	case CABC_MOVIE_MODE:
+		mode = 0x03;
+		break;
+	default:
+		mode = 0x00;
+	}
+	EXYNOS_DCS_WRITE_SEQ(ctx, 0x55, mode);
+
+	dev_dbg(ctx->dev, "%s CABC state: %u\n", __func__, mode);
 }
 
 static int ts110f5mlg0_read_id(struct exynos_panel *ctx)
@@ -356,6 +364,7 @@ static const struct exynos_panel_desc boe_ts110f5mlg0 = {
 	.data_lane_cnt = 4,
 	.max_brightness = 4095,
 	.min_brightness = 16,
+	.lower_min_brightness = 4,
 	.dft_brightness = 1146,
 	/* supported HDR format bitmask : 1(DOLBY_VISION), 2(HDR10), 3(HLG) */
 	.hdr_formats = BIT(2) | BIT(3),

@@ -5,6 +5,7 @@ dtb-$(CONFIG_SOC_GS201) += \
 dtbo-y += \
         gs201-tangorpro-dev2.dtbo \
         gs201-tangorpro-evt2.dtbo \
+        gs201-tangorpro-evt2-bezelblack.dtbo \
         gs201-tangorpro-evt2-wingboard.dtbo \
         gs201-tangorpro-dvt1.dtbo \
         gs201-tangorpro-pvt1.dtbo \
@@ -12,6 +13,7 @@ dtbo-y += \
 
 gs201-tangorpro-dev2.dtbo-base := google-base/gs201-b0_v2-ipop.dtb
 gs201-tangorpro-evt2.dtbo-base := google-base/gs201-b0_v2-ipop.dtb
+gs201-tangorpro-evt2-bezelblack.dtbo-base := google-base/gs201-b0_v2-ipop.dtb
 gs201-tangorpro-evt2-wingboard.dtbo-base := google-base/gs201-b0_v2-ipop.dtb
 gs201-tangorpro-dvt1.dtbo-base := google-base/gs201-b0_v2-ipop.dtb
 gs201-tangorpro-pvt1.dtbo-base := google-base/gs201-b0_v2-ipop.dtb
