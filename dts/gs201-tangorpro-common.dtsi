@@ -69,3 +69,14 @@
 &hsi2c_1 {
 	status = "disabled";
 };
+
+/ {
+	fragment@sbbmux {
+		target-path = "/";
+		__overlay__ {
+			sbb_mux: sbb-mux {
+				gpios = <&gpp18 0 0>, <&gpp18 1 0>, <&gpp18 3 0>, <&gpp18 2 0>;
+			};
+		};
+	};
+};
