@@ -481,11 +481,6 @@ static void update_pogo_transport(struct kthread_work *work)
 			break;
 		}
 
-		if (pogo_transport->acc_irq_enabled) {
-			disable_irq(pogo_transport->pogo_acc_irq);
-			pogo_transport->acc_irq_enabled = false;
-		}
-
 		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
 		if (ret)
 			logbuffer_log(pogo_transport->log, "%s: Failed to enable pogo_vout %d\n",
@@ -594,9 +589,16 @@ static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
 	logbuffer_log(pogo_transport->log, "Pogo acc threaded irq running, acc_detect %u",
 		      pogo_acc_gpio);
 
-	if (pogo_acc_gpio)
-		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
-				     pogo_transport->pogo_acc_gpio_debounce_ms);
+	if (pogo_acc_gpio) {
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq_nosync(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
+
+			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
+					     pogo_transport->pogo_acc_gpio_debounce_ms);
+		}
+	}
+
 	return IRQ_HANDLED;
 }
 
