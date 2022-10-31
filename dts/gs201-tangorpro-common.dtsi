@@ -12,7 +12,6 @@
 #include "google-base/gs201-cloudripper-bcl.dtsi"
 #include "google-base/gs201-cloudripper-bluetooth.dtsi"
 #include "google-base/gs201-cloudripper-gsa-gsc.dtsi"
-#include "google-base/gs201-cloudripper-sbbm.dtsi"
 #include "google-base/gs201-cloudripper-wlan.dtsi"
 
 #include "google-base/gs201-pantah-pmic.dtsi"
@@ -34,6 +33,7 @@
 #include "gs201-tangorpro-wlan.dtsi"
 #include "gs201-tangorpro-led.dtsi"
 #include "gs201-tangorpro-fingerprint.dtsi"
+#include "gs201-tangorpro-sbbm.dtsi"
 #include "gs201-tangorpro-typec.dtsi"
 #include "gs201-pogo-transport.dtsi"
 

@@ -35,6 +35,7 @@
 #define POGO_ACC_GPIO_DEBOUNCE_MS 20
 
 #define KEEP_USB_PATH 2
+#define KEEP_HUB_PATH 2
 
 enum pogo_event_type {
 	/* Reported when docking status changes */
@@ -109,10 +110,14 @@ struct pogo_transport {
 	bool force_pogo;
 	/* When true, pogo irq is enabled */
 	bool pogo_irq_enabled;
+	/* When true, acc irq is enabled */
+	bool acc_irq_enabled;
 	/* When true, hall1_s sensor reports attach event */
 	bool hall1_s_state;
 	/* When true, the path won't switch to pogo if accessory is attached */
 	bool mfg_acc_test;
+	/* When true, the hub will remain enabled after undocking */
+	bool force_hub_enabled;
 	/*
 	 * When true, skip acc detection and POGO Vout as well as POGO USB will be enabled.
 	 * Only applicable for debugfs capable builds.
@@ -387,7 +392,13 @@ static void update_pogo_transport(struct kthread_work *work)
 			}
 			switch_to_pogo_locked(pogo_transport);
 		} else if (!pogo_transport->pogo_usb_capable && pogo_transport->pogo_usb_active) {
-			switch_to_usbc_locked(pogo_transport);
+			if (pogo_transport->pogo_hub_active && pogo_transport->force_hub_enabled) {
+				pogo_transport->pogo_usb_capable = true;
+				logbuffer_log(pogo_transport->log, "%s: keep enabling the hub",
+					      __func__);
+			} else {
+				switch_to_usbc_locked(pogo_transport);
+			}
 		}
 		break;
 	case EVENT_MOVE_DATA_TO_USB:
@@ -450,8 +461,17 @@ static void update_pogo_transport(struct kthread_work *work)
 			pogo_transport->pogo_irq_enabled = true;
 		}
 
-		switch_to_usbc_locked(pogo_transport);
-		pogo_transport->pogo_usb_capable = false;
+		if (!pogo_transport->acc_irq_enabled) {
+			enable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = true;
+		}
+
+		if (pogo_transport->pogo_hub_active && pogo_transport->force_hub_enabled) {
+			logbuffer_log(pogo_transport->log, "%s: keep enabling the hub", __func__);
+		} else {
+			switch_to_usbc_locked(pogo_transport);
+			pogo_transport->pogo_usb_capable = false;
+		}
 		break;
 	case EVENT_POGO_ACC_DETECTED:
 		logbuffer_log(pogo_transport->log, "%s: acc detect debounce %s", __func__,
@@ -459,6 +479,11 @@ static void update_pogo_transport(struct kthread_work *work)
 		if (!acc_detected) {
 			pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_UNDOCKED, 0);
 			break;
+		}
+
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
 		}
 
 		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
@@ -492,6 +517,11 @@ static void update_pogo_transport(struct kthread_work *work)
 			pogo_transport->pogo_irq_enabled = false;
 		}
 
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
+		}
+
 		if (pogo_transport->pogo_ovp_en_gpio >= 0)
 			gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
 						!pogo_transport->pogo_ovp_en_active_state);
@@ -523,13 +553,15 @@ exit:
 	kobject_uevent(&pogo_transport->dev->kobj, KOBJ_CHANGE);
 free:
 	logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO,
-		       "evt:%d docked:%d force_u:%d force_p:%d pogo_usb:%d pogo_usb_active:%d data_active:%d vol_now:%d retry:%u mock_hid:%u",
+		       "ev:%d dock:%d frc_u:%d frc_p:%d frc_h:%d pogo_u:%d pogo_u_act:%d hub:%d data_act:%d vol_now:%d retry:%u mock_hid:%u",
 		       event->event_type,
 		       docked ? 1 : 0,
 		       modparam_force_usb ? 1 : 0,
 		       pogo_transport->force_pogo ? 1 : 0,
+		       pogo_transport->force_hub_enabled ? 1 : 0,
 		       pogo_transport->pogo_usb_capable ? 1 : 0,
 		       pogo_transport->pogo_usb_active ? 1 : 0,
+		       pogo_transport->pogo_hub_active ? 1 : 0,
 		       chip->data_active ? 1 : 0,
 		       voltage_now.intval,
 		       pogo_transport->retry_count,
@@ -750,6 +782,8 @@ static int init_pogo_irqs(struct pogo_transport *pogo_transport)
 		dev_err(pogo_transport->dev, "pogo-acc-detect request irq failed ret:%d\n", ret);
 		goto disable_status_irq_wake;
 	}
+
+	pogo_transport->acc_irq_enabled = true;
 
 	ret = enable_irq_wake(pogo_transport->pogo_acc_irq);
 	if (ret) {
@@ -1194,18 +1228,28 @@ static ssize_t enable_hub_store(struct device *dev, struct device_attribute *att
 				size_t size)
 {
 	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
-	bool enable_hub;
+	u8 enable_hub;
 
 	if (!pogo_transport->hub_embedded)
 		return size;
 
-	if (kstrtobool(buf, &enable_hub))
+	if (kstrtou8(buf, 0, &enable_hub))
 		return -EINVAL;
 
-	if (enable_hub == pogo_transport->pogo_hub_active)
+	if (pogo_transport->pogo_hub_active == !!enable_hub)
 		return size;
 
-	logbuffer_log(pogo_transport->log, "%s: %sable hub", __func__, enable_hub ? "en" : "dis");
+	/*
+	 * KEEP_HUB_PATH is only for engineering tests where the embedded hub remains enabled after
+	 * undocking.
+	 */
+	if (enable_hub == KEEP_HUB_PATH)
+		pogo_transport->force_hub_enabled = true;
+	else
+		pogo_transport->force_hub_enabled = false;
+
+	logbuffer_log(pogo_transport->log, "%s: %sable hub, force_hub_enabled %u", __func__,
+		      enable_hub ? "en" : "dis", pogo_transport->force_hub_enabled);
 	if (enable_hub)
 		pogo_transport_event(pogo_transport, EVENT_ENABLE_HUB, 0);
 	else

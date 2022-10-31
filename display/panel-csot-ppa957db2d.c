@@ -54,6 +54,17 @@ static const struct exynos_dsi_cmd ppa957db2d_init_cmds[] = {
 	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),
 	EXYNOS_DSI_CMD_SEQ(0x3A, 0x08),
 
+	/* CMD2, Page7 */
+	EXYNOS_DSI_CMD_SEQ(0xFF, 0x27),
+	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),
+
+	/* Error flag detection */
+	EXYNOS_DSI_CMD_SEQ(0xD0, 0x31),
+	EXYNOS_DSI_CMD_SEQ(0xD1, 0x84),
+	EXYNOS_DSI_CMD_SEQ(0xD2, 0x30),
+	EXYNOS_DSI_CMD_SEQ(0xDE, 0x03),
+	EXYNOS_DSI_CMD_SEQ(0xDF, 0x02),
+
 	/* CMD1 */
 	EXYNOS_DSI_CMD_SEQ(0xFF, 0x10),
 	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),

@@ -7,7 +7,7 @@
  */
 
 &google_battery {
-	google,chg-battery-capacity = <7020>;
+	google,chg-battery-capacity = <6900>;
 };
 
 &max77759_fg {
