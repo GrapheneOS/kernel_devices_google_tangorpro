@@ -136,12 +136,6 @@ static int rt4539_configure(struct rt4539 *rt, u32 brightness)
 	int ret;
 	u8 mask, data;
 
-	/* disable LED outputs */
-	ret = rt4539_update_field(rt, RT4539_REG0B,
-		RT4539_REG0B_BL_EN_MASK, 0);
-	if (ret < 0)
-		return ret;
-
 	/* set dimming mode */
 	ret = rt4539_update_field(rt, RT4539_REG00,
 		RT4539_REG00_DIMMING_MODE_MASK, rt->pdata->dimming_mode);
