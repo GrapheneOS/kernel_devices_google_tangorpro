@@ -40,8 +40,9 @@
 };
 
 &sec_pwm {
-	pinctrl-0 = <&pwm1_out>;
-	pinctrl-1 = <&pwm1_out_sleep>;
-	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&pwm1_out_sleep>;
+	pinctrl-1 = <&pwm1_out>;
+	pinctrl-2 = <&pwm1_out_sleep>;
+	pinctrl-names = "init", "default", "sleep";
 	status = "okay";
 };
