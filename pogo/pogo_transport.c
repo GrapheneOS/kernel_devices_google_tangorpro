@@ -622,10 +622,12 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 
 	if (pogo_transport->acc_detect_ldo &&
 	    regulator_is_enabled(pogo_transport->acc_detect_ldo) > 0) {
-		/* disable the irq to prevent the interrupt storm after pogo 5v out */
-		disable_irq_nosync(pogo_transport->pogo_irq);
-		pogo_transport->pogo_irq_enabled = false;
-		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
+		if (pogo_transport->pogo_irq_enabled) {
+			/* disable the irq to prevent the interrupt storm after pogo 5v out */
+			disable_irq_nosync(pogo_transport->pogo_irq);
+			pogo_transport->pogo_irq_enabled = false;
+			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
+		}
 		return IRQ_HANDLED;
 	}
 
