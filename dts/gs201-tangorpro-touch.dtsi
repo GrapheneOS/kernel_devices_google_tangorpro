@@ -18,6 +18,15 @@
 	samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
 };
 
+&ts_spi_cs_sleep {
+	samsung,pins = "gpp20-3";
+	samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+	samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+	samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
+	samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+};
+
 &spitouch {
 	status = "ok";
 	compatible = "novatek,NVT-ts-spi";
