@@ -146,14 +146,26 @@ static void update_extcon_dev(struct pogo_transport *pogo_transport, bool docked
 {
 	int ret;
 
-	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, usb_capable ? 1 : 0);
+	/* While docking, Signal EXTCON_USB before signalling EXTCON_DOCK */
+	if (docked) {
+		ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, usb_capable ?
+					    1 : 0);
+		if (ret)
+			dev_err(pogo_transport->dev, "%s Failed to %s EXTCON_USB\n", __func__,
+				usb_capable ? "set" : "clear");
+		ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, 1);
+		if (ret)
+			dev_err(pogo_transport->dev, "%s Failed to set EXTCON_DOCK\n", __func__);
+		return;
+	}
+
+	/* b/241919179: While undocking, Signal EXTCON_DOCK before signalling EXTCON_USB */
+	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, 0);
 	if (ret)
-		dev_err(pogo_transport->dev, "%s Failed to %s EXTCON_USB\n", __func__,
-			usb_capable ? "set" : "clear");
-	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, docked ? 1 : 0);
+		dev_err(pogo_transport->dev, "%s Failed to clear EXTCON_DOCK\n", __func__);
+	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, 0);
 	if (ret)
-		dev_err(pogo_transport->dev, "%s Failed to %s EXTCON_DOCK\n", __func__,
-			docked ? "set" : "clear");
+		dev_err(pogo_transport->dev, "%s Failed to clear EXTCON_USB\n", __func__);
 }
 
 static void disable_and_bypass_hub(struct pogo_transport *pogo_transport)
@@ -481,11 +493,6 @@ static void update_pogo_transport(struct kthread_work *work)
 			break;
 		}
 
-		if (pogo_transport->acc_irq_enabled) {
-			disable_irq(pogo_transport->pogo_acc_irq);
-			pogo_transport->acc_irq_enabled = false;
-		}
-
 		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
 		if (ret)
 			logbuffer_log(pogo_transport->log, "%s: Failed to enable pogo_vout %d\n",
@@ -594,9 +601,16 @@ static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
 	logbuffer_log(pogo_transport->log, "Pogo acc threaded irq running, acc_detect %u",
 		      pogo_acc_gpio);
 
-	if (pogo_acc_gpio)
-		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
-				     pogo_transport->pogo_acc_gpio_debounce_ms);
+	if (pogo_acc_gpio) {
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq_nosync(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
+
+			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
+					     pogo_transport->pogo_acc_gpio_debounce_ms);
+		}
+	}
+
 	return IRQ_HANDLED;
 }
 
@@ -620,10 +634,12 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 
 	if (pogo_transport->acc_detect_ldo &&
 	    regulator_is_enabled(pogo_transport->acc_detect_ldo) > 0) {
-		/* disable the irq to prevent the interrupt storm after pogo 5v out */
-		disable_irq_nosync(pogo_transport->pogo_irq);
-		pogo_transport->pogo_irq_enabled = false;
-		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
+		if (pogo_transport->pogo_irq_enabled) {
+			/* disable the irq to prevent the interrupt storm after pogo 5v out */
+			disable_irq_nosync(pogo_transport->pogo_irq);
+			pogo_transport->pogo_irq_enabled = false;
+			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
+		}
 		return IRQ_HANDLED;
 	}
 
