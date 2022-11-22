@@ -25,6 +25,11 @@
 	clock-frequency = <400000>;
 
 	lp8556_bl: backlight@2c {
+		/*
+		 * If bootloader probed lp8556_bl successfully, it will change
+		 * lp8556_bl to status = "okay" and rt4539_bl to status = "disabled"
+		 */
+		status = "disabled";
 		compatible = "ti,lp8556";
 		reg = <0x2c>;
 
@@ -48,6 +53,11 @@
 		};
 	};
 	rt4539_bl: backlight@3c {
+		/*
+		 * If bootloader probed lp8556_bl successfully, it will change
+		 * lp8556_bl to status = "okay" and rt4539_bl to status = "disabled"
+		 */
+		status = "okay";
 		compatible = "richtek,rt4539";
 		reg = <0x3c>;
 
