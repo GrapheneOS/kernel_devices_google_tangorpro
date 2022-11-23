@@ -39,3 +39,7 @@
 		tune_value = <0x1 0x1>;
 	};
 };
+
+&udc {
+	extcon = <&max77759tcpc &google_pogo>;
+};
