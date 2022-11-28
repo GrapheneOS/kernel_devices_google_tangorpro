@@ -21,8 +21,10 @@
 #include <linux/power_supply.h>
 #include <linux/regulator/consumer.h>
 #include <linux/usb/tcpm.h>
+#include <misc/gvotable.h>
 
 #include "../tcpci.h"
+#include "google_bms.h"
 #include "google_psy.h"
 #include "tcpci_max77759.h"
 
@@ -36,6 +38,8 @@
 
 #define KEEP_USB_PATH 2
 #define KEEP_HUB_PATH 2
+
+#define POGO_VOTER "POGO"
 
 enum pogo_event_type {
 	/* Reported when docking status changes */
@@ -132,6 +136,7 @@ struct pogo_transport {
 	struct extcon_dev *extcon;
 	/* When true, disable voltage based detection of pogo partners */
 	bool disable_voltage_detection;
+	struct gvotable_election *charger_mode_votable;
 };
 
 static const unsigned int pogo_extcon_cable[] = {
@@ -146,14 +151,26 @@ static void update_extcon_dev(struct pogo_transport *pogo_transport, bool docked
 {
 	int ret;
 
-	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, usb_capable ? 1 : 0);
+	/* While docking, Signal EXTCON_USB before signalling EXTCON_DOCK */
+	if (docked) {
+		ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, usb_capable ?
+					    1 : 0);
+		if (ret)
+			dev_err(pogo_transport->dev, "%s Failed to %s EXTCON_USB\n", __func__,
+				usb_capable ? "set" : "clear");
+		ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, 1);
+		if (ret)
+			dev_err(pogo_transport->dev, "%s Failed to set EXTCON_DOCK\n", __func__);
+		return;
+	}
+
+	/* b/241919179: While undocking, Signal EXTCON_DOCK before signalling EXTCON_USB */
+	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, 0);
 	if (ret)
-		dev_err(pogo_transport->dev, "%s Failed to %s EXTCON_USB\n", __func__,
-			usb_capable ? "set" : "clear");
-	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, docked ? 1 : 0);
+		dev_err(pogo_transport->dev, "%s Failed to clear EXTCON_DOCK\n", __func__);
+	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, 0);
 	if (ret)
-		dev_err(pogo_transport->dev, "%s Failed to %s EXTCON_DOCK\n", __func__,
-			docked ? "set" : "clear");
+		dev_err(pogo_transport->dev, "%s Failed to clear EXTCON_USB\n", __func__);
 }
 
 static void disable_and_bypass_hub(struct pogo_transport *pogo_transport)
@@ -481,11 +498,6 @@ static void update_pogo_transport(struct kthread_work *work)
 			break;
 		}
 
-		if (pogo_transport->acc_irq_enabled) {
-			disable_irq(pogo_transport->pogo_acc_irq);
-			pogo_transport->acc_irq_enabled = false;
-		}
-
 		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
 		if (ret)
 			logbuffer_log(pogo_transport->log, "%s: Failed to enable pogo_vout %d\n",
@@ -553,7 +565,7 @@ exit:
 	kobject_uevent(&pogo_transport->dev->kobj, KOBJ_CHANGE);
 free:
 	logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO,
-		       "ev:%d dock:%d frc_u:%d frc_p:%d frc_h:%d pogo_u:%d pogo_u_act:%d hub:%d data_act:%d vol_now:%d retry:%u mock_hid:%u",
+		       "ev:%u dock:%u f_u:%u f_p:%u f_h:%u p_u:%u p_act:%u hub:%u d_act:%u mock:%u v:%d",
 		       event->event_type,
 		       docked ? 1 : 0,
 		       modparam_force_usb ? 1 : 0,
@@ -563,9 +575,8 @@ free:
 		       pogo_transport->pogo_usb_active ? 1 : 0,
 		       pogo_transport->pogo_hub_active ? 1 : 0,
 		       chip->data_active ? 1 : 0,
-		       voltage_now.intval,
-		       pogo_transport->retry_count,
-		       pogo_transport->mock_hid_connected);
+		       pogo_transport->mock_hid_connected ? 1 : 0,
+		       voltage_now.intval);
 
 	devm_kfree(pogo_transport->dev, event);
 }
@@ -594,9 +605,16 @@ static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
 	logbuffer_log(pogo_transport->log, "Pogo acc threaded irq running, acc_detect %u",
 		      pogo_acc_gpio);
 
-	if (pogo_acc_gpio)
-		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
-				     pogo_transport->pogo_acc_gpio_debounce_ms);
+	if (pogo_acc_gpio) {
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq_nosync(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
+
+			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
+					     pogo_transport->pogo_acc_gpio_debounce_ms);
+		}
+	}
+
 	return IRQ_HANDLED;
 }
 
@@ -620,21 +638,28 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 
 	if (pogo_transport->acc_detect_ldo &&
 	    regulator_is_enabled(pogo_transport->acc_detect_ldo) > 0) {
-		/* disable the irq to prevent the interrupt storm after pogo 5v out */
-		disable_irq_nosync(pogo_transport->pogo_irq);
-		pogo_transport->pogo_irq_enabled = false;
-		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
+		if (pogo_transport->pogo_irq_enabled) {
+			/* disable the irq to prevent the interrupt storm after pogo 5v out */
+			disable_irq_nosync(pogo_transport->pogo_irq);
+			pogo_transport->pogo_irq_enabled = false;
+			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
+		}
 		return IRQ_HANDLED;
 	}
 
+
 	if (pogo_transport->pogo_ovp_en_gpio >= 0) {
+		int ret;
+
 		/*
-		 * set to active state if pogo_gpio (ACTIVE_LOW) is in active state (0)
-		 * set to disable state if pogo_gpio (ACTIVE_LOW) is in disable state (1)
+		 * Vote GBMS_POGO_VIN to notify BMS that there is input voltage on pogo power and
+		 * it is over the threshold if pogo_gpio (ACTIVE_LOW) is in active state (0)
 		 */
-		gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio, pogo_gpio ?
-					!pogo_transport->pogo_ovp_en_active_state :
-					pogo_transport->pogo_ovp_en_active_state);
+		ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable, POGO_VOTER,
+					      GBMS_POGO_VIN, !pogo_gpio);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to vote VIN, ret %d\n",
+				      __func__, ret);
 	}
 
 	/*
@@ -1075,6 +1100,14 @@ static int pogo_transport_probe(struct platform_device *pdev)
 	ret = devm_extcon_dev_register(pogo_transport->dev, pogo_transport->extcon);
 	if (ret < 0) {
 		dev_err(chip->dev, "failed to register extcon device:%d\n", ret);
+		goto psy_put;
+	}
+
+	pogo_transport->charger_mode_votable = gvotable_election_get_handle(GBMS_MODE_VOTABLE);
+	if (IS_ERR_OR_NULL(pogo_transport->charger_mode_votable)) {
+		dev_err(pogo_transport->dev, "GBMS_MODE_VOTABLE get failed %ld\n",
+			PTR_ERR(pogo_transport->charger_mode_votable));
+		ret = -EPROBE_DEFER;
 		goto psy_put;
 	}
 
