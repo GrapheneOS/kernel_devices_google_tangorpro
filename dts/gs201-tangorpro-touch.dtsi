@@ -12,6 +12,7 @@
 &ts_spi_cs_active {
 	samsung,pins = "gpp20-3";
 	samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+	samsung,pin-val = <1>;
 	samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
 	samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT1>;
@@ -2150,6 +2151,7 @@
 		samsung,spi-feedback-delay = <0>;
 		samsung,spi-chip-select-mode = <1>;
 		cs-clock-delay = <1>;
+		cs-init-state = <0>;
 	};
 };
 
