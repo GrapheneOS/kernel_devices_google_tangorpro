@@ -7,6 +7,17 @@
  */
 #include "gs201-tangorpro-display-constants.dtsi"
 
+&reserved_memory {
+	fb_handover: fb_handover {
+		compatible = "exynos,fb_handover";
+		reg = <0x0 0xfac00000 0x01400000>;
+	};
+};
+
+&s2mpu_dpu0 {
+	always-on;
+};
+
 &hsi2c_6 {
 	#address-cells = <1>;
 	#size-cells = <0>;
@@ -14,6 +25,11 @@
 	clock-frequency = <400000>;
 
 	lp8556_bl: backlight@2c {
+		/*
+		 * If bootloader probed lp8556_bl successfully, it will change
+		 * lp8556_bl to status = "okay" and rt4539_bl to status = "disabled"
+		 */
+		status = "disabled";
 		compatible = "ti,lp8556";
 		reg = <0x2c>;
 
@@ -37,6 +53,11 @@
 		};
 	};
 	rt4539_bl: backlight@3c {
+		/*
+		 * If bootloader probed lp8556_bl successfully, it will change
+		 * lp8556_bl to status = "okay" and rt4539_bl to status = "disabled"
+		 */
+		status = "okay";
 		compatible = "richtek,rt4539";
 		reg = <0x3c>;
 
@@ -81,6 +102,8 @@
 
 &drmdecon0 {
 	override-hibernation;
+	memory-region = <&fb_handover>;
+	samsung,iommu-identity-map = <0x0 0xFAC00000 0x01400000>;
 };
 
 &dsim_modes {
