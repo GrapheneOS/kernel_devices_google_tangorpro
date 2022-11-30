@@ -62,7 +62,7 @@ enum pogo_event_type {
 	EVENT_HALL_SENSOR_ACC_UNDOCKED,
 
 	/* 10 */
-	EVENT_POGO_ACC_DETECTED,
+	EVENT_POGO_ACC_DEBOUNCING,
 	EVENT_POGO_ACC_CONNECTED,
 	/* Bypass the accessory detection and enable POGO Vout and POGO USB capability */
 	/* This event is for debug only and never used in normal operations. */
@@ -490,12 +490,16 @@ static void update_pogo_transport(struct kthread_work *work)
 			pogo_transport->pogo_usb_capable = false;
 		}
 		break;
-	case EVENT_POGO_ACC_DETECTED:
+	case EVENT_POGO_ACC_DEBOUNCING:
 		logbuffer_log(pogo_transport->log, "%s: acc detect debounce %s", __func__,
 			      acc_detected ? "success, enabling pogo_vout" : "fail");
-		if (!acc_detected) {
-			pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_UNDOCKED, 0);
+		/* Do nothing if debounce fails */
+		if (!acc_detected)
 			break;
+
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
 		}
 
 		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
@@ -605,15 +609,9 @@ static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
 	logbuffer_log(pogo_transport->log, "Pogo acc threaded irq running, acc_detect %u",
 		      pogo_acc_gpio);
 
-	if (pogo_acc_gpio) {
-		if (pogo_transport->acc_irq_enabled) {
-			disable_irq_nosync(pogo_transport->pogo_acc_irq);
-			pogo_transport->acc_irq_enabled = false;
-
-			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
-					     pogo_transport->pogo_acc_gpio_debounce_ms);
-		}
-	}
+	if (pogo_acc_gpio)
+		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DEBOUNCING,
+				     pogo_transport->pogo_acc_gpio_debounce_ms);
 
 	return IRQ_HANDLED;
 }
@@ -623,7 +621,6 @@ static irqreturn_t pogo_acc_isr(int irq, void *dev_id)
 	struct pogo_transport *pogo_transport = dev_id;
 
 	logbuffer_log(pogo_transport->log, "POGO ACC IRQ triggered ");
-	/* FIXME: timeout value? */
 	pm_wakeup_event(pogo_transport->dev, POGO_TIMEOUT_MS);
 
 	return IRQ_WAKE_THREAD;
