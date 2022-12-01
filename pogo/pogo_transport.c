@@ -460,9 +460,10 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 		break;
 	case EVENT_HALL_SENSOR_ACC_UNDOCKED:
 		pogo_transport->mock_hid_connected = 0;
-		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 0);
+		ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable, POGO_VOTER,
+					      GBMS_POGO_VOUT, 0);
 		if (ret)
-			logbuffer_log(pogo_transport->log, "%s: Failed to disable pogo_vout %d\n",
+			logbuffer_log(pogo_transport->log, "%s: Failed to unvote VOUT, ret %d",
 				      __func__, ret);
 
 		if (pogo_transport->acc_detect_ldo &&
@@ -502,9 +503,10 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 			pogo_transport->acc_irq_enabled = false;
 		}
 
-		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
+		ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable, POGO_VOTER,
+					      GBMS_POGO_VOUT, 1);
 		if (ret)
-			logbuffer_log(pogo_transport->log, "%s: Failed to enable pogo_vout %d\n",
+			logbuffer_log(pogo_transport->log, "%s: Failed to vote VOUT, ret %d",
 				      __func__, ret);
 		break;
 	case EVENT_POGO_ACC_CONNECTED:
@@ -551,9 +553,10 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 					      "%s: Failed to disable acc_detect %d", __func__, ret);
 		}
 
-		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
+		ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable, POGO_VOTER,
+					      GBMS_POGO_VOUT, 1);
 		if (ret)
-			logbuffer_log(pogo_transport->log, "%s: Failed to enable pogo_vout %d\n",
+			logbuffer_log(pogo_transport->log, "%s: Failed to vote VOUT, ret %d",
 				      __func__, ret);
 
 		switch_to_pogo_locked(pogo_transport);
@@ -648,7 +651,7 @@ static irqreturn_t pogo_acc_isr(int irq, void *dev_id)
 {
 	struct pogo_transport *pogo_transport = dev_id;
 
-	logbuffer_log(pogo_transport->log, "POGO ACC IRQ triggered ");
+	logbuffer_log(pogo_transport->log, "POGO ACC IRQ triggered");
 	pm_wakeup_event(pogo_transport->dev, POGO_TIMEOUT_MS);
 
 	return IRQ_WAKE_THREAD;
@@ -683,7 +686,7 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 		ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable, POGO_VOTER,
 					      GBMS_POGO_VIN, !pogo_gpio);
 		if (ret)
-			logbuffer_log(pogo_transport->log, "%s: Failed to vote VIN, ret %d\n",
+			logbuffer_log(pogo_transport->log, "%s: Failed to vote VIN, ret %d",
 				      __func__, ret);
 	}
 
@@ -708,7 +711,7 @@ static irqreturn_t pogo_isr(int irq, void *dev_id)
 {
 	struct pogo_transport *pogo_transport = dev_id;
 
-	logbuffer_log(pogo_transport->log, "POGO IRQ triggered ");
+	logbuffer_log(pogo_transport->log, "POGO IRQ triggered");
 	pm_wakeup_event(pogo_transport->dev, POGO_TIMEOUT_MS);
 
 	return IRQ_WAKE_THREAD;
