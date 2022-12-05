@@ -62,7 +62,7 @@ enum pogo_event_type {
 	EVENT_HALL_SENSOR_ACC_UNDOCKED,
 
 	/* 10 */
-	EVENT_POGO_ACC_DETECTED,
+	EVENT_POGO_ACC_DEBOUNCED,
 	EVENT_POGO_ACC_CONNECTED,
 	/* Bypass the accessory detection and enable POGO Vout and POGO USB capability */
 	/* This event is for debug only and never used in normal operations. */
@@ -137,6 +137,9 @@ struct pogo_transport {
 	/* When true, disable voltage based detection of pogo partners */
 	bool disable_voltage_detection;
 	struct gvotable_election *charger_mode_votable;
+
+	/* Used for cancellable work such as pogo debouncing */
+	struct kthread_delayed_work pogo_accessory_debounce_work;
 };
 
 static const unsigned int pogo_extcon_cable[] = {
@@ -314,12 +317,9 @@ static void switch_to_hub_locked(struct pogo_transport *pogo_transport)
 	pogo_transport->pogo_hub_active = true;
 }
 
-static void update_pogo_transport(struct kthread_work *work)
+static void update_pogo_transport(struct pogo_transport *pogo_transport,
+				  enum pogo_event_type event_type)
 {
-	struct pogo_event *event =
-		container_of(container_of(work, struct kthread_delayed_work, work),
-			     struct pogo_event, work);
-	struct pogo_transport *pogo_transport = event->pogo_transport;
 	struct max77759_plat *chip = pogo_transport->chip;
 	int ret;
 	union power_supply_propval voltage_now = {0};
@@ -336,7 +336,7 @@ static void update_pogo_transport(struct kthread_work *work)
 		goto free;
 	}
 
-	if (event->event_type == EVENT_DOCKING || event->event_type == EVENT_RETRY_READ_VOLTAGE) {
+	if (event_type == EVENT_DOCKING || event_type == EVENT_RETRY_READ_VOLTAGE) {
 		if (docked) {
 			if (pogo_transport->disable_voltage_detection ||
 			    voltage_now.intval >= POGO_USB_CAPABLE_THRESHOLD_UV) {
@@ -381,7 +381,7 @@ static void update_pogo_transport(struct kthread_work *work)
 	}
 
 	if (pogo_transport->mock_hid_connected) {
-		switch (event->event_type) {
+		switch (event_type) {
 		case EVENT_ENABLE_HUB:
 		case EVENT_DISABLE_HUB:
 		case EVENT_FORCE_ACC_CONNECT:
@@ -394,7 +394,7 @@ static void update_pogo_transport(struct kthread_work *work)
 		}
 	}
 
-	switch (event->event_type) {
+	switch (event_type) {
 	case EVENT_DOCKING:
 	case EVENT_RETRY_READ_VOLTAGE:
 		if (pogo_transport->pogo_usb_capable && !pogo_transport->pogo_usb_active) {
@@ -490,12 +490,16 @@ static void update_pogo_transport(struct kthread_work *work)
 			pogo_transport->pogo_usb_capable = false;
 		}
 		break;
-	case EVENT_POGO_ACC_DETECTED:
+	case EVENT_POGO_ACC_DEBOUNCED:
 		logbuffer_log(pogo_transport->log, "%s: acc detect debounce %s", __func__,
 			      acc_detected ? "success, enabling pogo_vout" : "fail");
-		if (!acc_detected) {
-			pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_UNDOCKED, 0);
+		/* Do nothing if debounce fails */
+		if (!acc_detected)
 			break;
+
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
 		}
 
 		ret = GPSY_SET_PROP(pogo_transport->pogo_psy, GBMS_PROP_POGO_VOUT_ENABLED, 1);
@@ -566,7 +570,7 @@ exit:
 free:
 	logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO,
 		       "ev:%u dock:%u f_u:%u f_p:%u f_h:%u p_u:%u p_act:%u hub:%u d_act:%u mock:%u v:%d",
-		       event->event_type,
+		       event_type,
 		       docked ? 1 : 0,
 		       modparam_force_usb ? 1 : 0,
 		       pogo_transport->force_pogo ? 1 : 0,
@@ -577,8 +581,27 @@ free:
 		       chip->data_active ? 1 : 0,
 		       pogo_transport->mock_hid_connected ? 1 : 0,
 		       voltage_now.intval);
+}
+
+static void process_generic_event(struct kthread_work *work)
+{
+	struct pogo_event *event =
+		container_of(container_of(work, struct kthread_delayed_work, work),
+			     struct pogo_event, work);
+	struct pogo_transport *pogo_transport = event->pogo_transport;
+
+	update_pogo_transport(pogo_transport, event->event_type);
 
 	devm_kfree(pogo_transport->dev, event);
+}
+
+static void process_debounce_event(struct kthread_work *work)
+{
+	struct pogo_transport *pogo_transport =
+		container_of(container_of(work, struct kthread_delayed_work, work),
+			     struct pogo_transport, pogo_accessory_debounce_work);
+
+	update_pogo_transport(pogo_transport, EVENT_POGO_ACC_DEBOUNCED);
 }
 
 static void pogo_transport_event(struct pogo_transport *pogo_transport,
@@ -586,12 +609,19 @@ static void pogo_transport_event(struct pogo_transport *pogo_transport,
 {
 	struct pogo_event *evt;
 
+	if (event_type == EVENT_POGO_ACC_DEBOUNCED) {
+		kthread_mod_delayed_work(pogo_transport->wq,
+					 &pogo_transport->pogo_accessory_debounce_work,
+					 msecs_to_jiffies(delay_ms));
+		return;
+	}
+
 	evt = devm_kzalloc(pogo_transport->dev, sizeof(*evt), GFP_KERNEL);
 	if (!evt) {
 		logbuffer_log(pogo_transport->log, "POGO: Dropping event");
 		return;
 	}
-	kthread_init_delayed_work(&evt->work, update_pogo_transport);
+	kthread_init_delayed_work(&evt->work, process_generic_event);
 	evt->pogo_transport = pogo_transport;
 	evt->event_type = event_type;
 	kthread_mod_delayed_work(pogo_transport->wq, &evt->work, msecs_to_jiffies(delay_ms));
@@ -605,15 +635,11 @@ static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
 	logbuffer_log(pogo_transport->log, "Pogo acc threaded irq running, acc_detect %u",
 		      pogo_acc_gpio);
 
-	if (pogo_acc_gpio) {
-		if (pogo_transport->acc_irq_enabled) {
-			disable_irq_nosync(pogo_transport->pogo_acc_irq);
-			pogo_transport->acc_irq_enabled = false;
-
-			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DETECTED,
-					     pogo_transport->pogo_acc_gpio_debounce_ms);
-		}
-	}
+	if (pogo_acc_gpio)
+		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DEBOUNCED,
+				     pogo_transport->pogo_acc_gpio_debounce_ms);
+	else
+		kthread_cancel_delayed_work_sync(&pogo_transport->pogo_accessory_debounce_work);
 
 	return IRQ_HANDLED;
 }
@@ -623,7 +649,6 @@ static irqreturn_t pogo_acc_isr(int irq, void *dev_id)
 	struct pogo_transport *pogo_transport = dev_id;
 
 	logbuffer_log(pogo_transport->log, "POGO ACC IRQ triggered ");
-	/* FIXME: timeout value? */
 	pm_wakeup_event(pogo_transport->dev, POGO_TIMEOUT_MS);
 
 	return IRQ_WAKE_THREAD;
@@ -1063,6 +1088,9 @@ static int pogo_transport_probe(struct platform_device *pdev)
 		ret = PTR_ERR(pogo_transport->wq);
 		goto unreg_logbuffer;
 	}
+
+	kthread_init_delayed_work(&pogo_transport->pogo_accessory_debounce_work,
+				  process_debounce_event);
 
 	dn = dev_of_node(pogo_transport->dev);
 	if (!dn) {
