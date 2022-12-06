@@ -124,9 +124,6 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 
-	/* interrupt for error flag (ESD) */
-	errfg-gpio = <&gpp0 3 0xf>;
-
 	boe_ts110f5mlg0_m0: panel@0 {
 		compatible = "boe,ts110f5mlg0";
 		label = "boe-ts110f5mlg0";
