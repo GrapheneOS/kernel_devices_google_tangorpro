@@ -16,12 +16,12 @@
 
 	hs_tune2 {
 		tune_name = "tx_vref";
-		tune_value = <0x9 0x9>;
+		tune_value = <0xf 0xf>;
 	};
 
 	hs_tune3 {
 		tune_name = "rx_sqrx";
-		tune_value = <0x2 0x2>;
+		tune_value = <0x7 0x7>;
 	};
 
 	hs_tune4 {
@@ -36,7 +36,7 @@
 
 	hs_tune6 {
 		tune_name = "tx_res";
-		tune_value = <0x1 0x1>;
+		tune_value = <0x3 0x3>;
 	};
 };
 
