@@ -73,10 +73,33 @@ static bool modparam_force_usb;
 module_param_named(force_usb, modparam_force_usb, bool, 0644);
 MODULE_PARM_DESC(force_usb, "Force enabling usb path over pogo");
 
+/* Overrides device tree config */
+static int modparam_pogo_accessory_enable;
+module_param_named(pogo_accessory_enable, modparam_pogo_accessory_enable, int, 0644);
+MODULE_PARM_DESC(pogo_accessory_enable, "Enabling accessory detection over pogo");
+
 struct pogo_event {
 	struct kthread_delayed_work work;
 	struct pogo_transport *pogo_transport;
 	enum pogo_event_type event_type;
+};
+
+enum pogo_accessory_detection {
+	/* Pogo accessory detection is disabled. */
+	DISABLED,
+	/*
+	 * Pogo accessory detection is only based on HALL output mapped to pogo-acc-hall-capable.
+	 * Expected seq:
+	 * EVENT_HALL_SENSOR_ACC_DETECTED -> EVENT_HALL_SENSOR_ACC_UNDOCKED
+	 */
+	HALL_ONLY,
+	/*
+	 * Pogo accessory detection POR mapped to pogo-acc-capable.
+	 * Expected seq:
+	 * EVENT_HALL_SENSOR_ACC_DETECTED -> EVENT_POGO_ACC_DEBOUNCED ->
+	 * EVENT_POGO_ACC_CONNECTED -> EVENT_HALL_SENSOR_ACC_UNDOCKED
+	 */
+	ENABLED
 };
 
 struct pogo_transport {
@@ -140,6 +163,9 @@ struct pogo_transport {
 
 	/* Used for cancellable work such as pogo debouncing */
 	struct kthread_delayed_work pogo_accessory_debounce_work;
+
+	/* Pogo accessory detection status */
+	enum pogo_accessory_detection accessory_detection_enabled;
 };
 
 static const unsigned int pogo_extcon_cable[] = {
@@ -451,11 +477,26 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 			gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
 						!pogo_transport->pogo_ovp_en_active_state);
 
-		if (pogo_transport->acc_detect_ldo) {
+		if (pogo_transport->acc_detect_ldo &&
+		    pogo_transport->accessory_detection_enabled == ENABLED) {
 			ret = regulator_enable(pogo_transport->acc_detect_ldo);
 			if (ret)
 				logbuffer_log(pogo_transport->log, "%s: Failed to enable acc_detect %d",
 					      __func__, ret);
+		} else if (pogo_transport->accessory_detection_enabled == HALL_ONLY) {
+			logbuffer_log(pogo_transport->log,
+				      "%s: Skip enabling comparator logic, enable vout", __func__);
+			if (pogo_transport->pogo_irq_enabled) {
+				disable_irq_nosync(pogo_transport->pogo_irq);
+				pogo_transport->pogo_irq_enabled = false;
+			}
+			ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable,
+						      POGO_VOTER, GBMS_POGO_VOUT, 1);
+			if (ret)
+				logbuffer_log(pogo_transport->log,
+					      "%s: Failed to vote VOUT, ret %d", __func__, ret);
+			switch_to_pogo_locked(pogo_transport);
+			pogo_transport->pogo_usb_capable = true;
 		}
 		break;
 	case EVENT_HALL_SENSOR_ACC_UNDOCKED:
@@ -521,7 +562,8 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 			if (ret)
 				logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect_ldo %d",
 					      __func__, ret);
-
+		}
+		if (pogo_transport->accessory_detection_enabled) {
 			if (!pogo_transport->mfg_acc_test) {
 				switch_to_pogo_locked(pogo_transport);
 				pogo_transport->pogo_usb_capable = true;
@@ -1164,10 +1206,20 @@ static int pogo_transport_probe(struct platform_device *pdev)
 			goto psy_put;
 	}
 
-	if (of_property_read_bool(dn, "pogo-acc-capable")) {
+	if (modparam_pogo_accessory_enable) {
 		ret = init_acc_gpio(pogo_transport);
 		if (ret)
 			goto psy_put;
+		pogo_transport->accessory_detection_enabled = modparam_pogo_accessory_enable;
+	} else if (of_property_read_bool(dn, "pogo-acc-capable") ||
+		   of_property_read_bool(dn, "pogo-acc-hall-only")) {
+		ret = init_acc_gpio(pogo_transport);
+		if (ret)
+			goto psy_put;
+		if (of_property_read_bool(dn, "pogo-acc-capable"))
+			pogo_transport->accessory_detection_enabled = ENABLED;
+		else
+			pogo_transport->accessory_detection_enabled = HALL_ONLY;
 	}
 
 	pogo_transport->disable_voltage_detection =
@@ -1337,6 +1389,12 @@ static ssize_t hall1_s_store(struct device *dev, struct device_attribute *attr, 
 
 	if (!pogo_transport->acc_detect_ldo)
 		return size;
+
+	if (!pogo_transport->accessory_detection_enabled) {
+		logbuffer_log(pogo_transport->log, "%s:Accessory detection disabled ? skipping",
+			      __func__);
+		return size;
+	}
 
 	if (kstrtou8(buf, 0, &enable_acc_detect))
 		return -EINVAL;
