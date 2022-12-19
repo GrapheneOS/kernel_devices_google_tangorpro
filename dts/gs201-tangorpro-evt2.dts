@@ -9,7 +9,7 @@
 /plugin/;
 
 #include "gs201-tangorpro-common.dtsi"
-
+#include "gs201-pogo-transport-evt2.dtsi"
 / {
 	board_id = <0x30703>;
 	board_rev = <0x20000>;
