@@ -16,8 +16,7 @@
 
 #include "google-base/gs201-pantah-pmic.dtsi"
 
-#include "google-base/gs201-ravenclaw-uwb.dtsi"
-
+#include "gs201-tangorpro-uwb.dtsi"
 #include "gs201-tangorpro-camera-pmic.dtsi"
 #include "gs201-tangorpro-camera.dtsi"
 #include "gs201-tangorpro-display.dtsi"
