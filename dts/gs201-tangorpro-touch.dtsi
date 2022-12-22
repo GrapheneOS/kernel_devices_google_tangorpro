@@ -53,7 +53,8 @@
 	novatek,pen-support;
 	novatek,wgp-stylus;
 
-	goog,wakeup-before-force-active-enabled;
+	goog,ignore-force-active;
+	goog,ignore-screenoff-heatmap;
 	goog,default-grip-disabled;
 	goog,default-palm-disabled;
 	goog,offload-caps-cancel-reporting;
