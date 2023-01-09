@@ -98,6 +98,56 @@
 		led-short-protection;
 		pfm-enable;
 	};
+
+	tps65132_bias: lcd-bias@3e {
+		/*
+		 * If bootloader probed rt4801_bias successfully, it will change
+		 * tps65132_bias to status = "disabled"
+		 */
+		status = "okay";
+		compatible = "ti,tps65132";
+		reg = <0x3e>;
+
+		tps65132_avdd: outp {
+			regulator-name = "disp_avdd";
+			regulator-min-microvolt = <4000000>;
+			regulator-max-microvolt = <TANGORPRO_AVDD_MICROVOLT>;
+			regulator-boot-on;
+			enable-gpios = <&gpp23 1 GPIO_ACTIVE_HIGH>;
+		};
+
+		tps65132_avee: outn {
+			regulator-name = "disp_avee";
+			regulator-min-microvolt = <4000000>;
+			regulator-max-microvolt = <TANGORPRO_AVEE_MICROVOLT>;
+			regulator-boot-on;
+		};
+	};
+
+	rt4801_bias: lcd-bias@73 {
+		/*
+		 * If bootloader probed tps65132_bias successfully, it will change
+		 * rt4801_bias to status = "disabled"
+		 */
+		status = "okay";
+		compatible = "richtek,rt4801";
+		reg = <0x73>;
+		enable-gpios = <&gpp23 1 GPIO_ACTIVE_HIGH>;
+
+		rt4801_avdd: DSVP {
+			regulator-name = "disp_avdd";
+			regulator-min-microvolt = <4000000>;
+			regulator-max-microvolt = <TANGORPRO_AVDD_MICROVOLT>;
+			regulator-boot-on;
+		};
+
+		rt4801_avee: DSVN {
+			regulator-name = "disp_avee";
+			regulator-min-microvolt = <4000000>;
+			regulator-max-microvolt = <TANGORPRO_AVEE_MICROVOLT>;
+			regulator-boot-on;
+		};
+	};
 };
 
 &drmdecon0 {

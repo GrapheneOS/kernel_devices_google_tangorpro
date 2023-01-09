@@ -9,7 +9,12 @@
 /* 0: normal, 1: bottom up, 2: left up, 3: right up */
 orientation = <0>;
 
+/* i2c power supply */
+i2c-pwr-supply = <&m_ldo25_reg>;
+
 /* reset, power */
 reset-gpios = <&gpa7 1 GPIO_ACTIVE_HIGH>;
 vddi-supply = <&m_ldo24_reg>;
-vci-supply = <&disp_vci>;
+disp_bias = <&rt4801_bias &tps65132_bias>;
+avdd-microvolt = <TANGORPRO_AVDD_MICROVOLT>;
+avee-microvolt = <TANGORPRO_AVEE_MICROVOLT>;

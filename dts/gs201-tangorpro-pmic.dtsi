@@ -15,12 +15,6 @@
 	subsys-name = "Display";
 };
 
-/* Display: vci-supply voltage */
-&disp_vci {
-	status = "okay";
-	gpio = <&gpp23 1 GPIO_ACTIVE_HIGH>;
-};
-
 /* Display: backlight enable */
 &m_ldo25_reg {
 	regulator-boot-on;
