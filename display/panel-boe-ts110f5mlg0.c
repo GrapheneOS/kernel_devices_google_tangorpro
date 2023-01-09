@@ -7,6 +7,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/kthread.h>
 #include <uapi/linux/sched/types.h>
@@ -157,6 +158,33 @@ static const struct exynos_dsi_cmd ts110f5mlg0_off_cmds[] = {
 };
 static DEFINE_EXYNOS_CMD_SET(ts110f5mlg0_off);
 
+/**
+ * struct ts110f5mlg0_panel - panel specific info
+ * This struct maintains ts110f5mlg0 panel specific information, any fixed details about
+ * panel should most likely go into struct exynos_panel or exynos_panel_desc
+ */
+struct ts110f5mlg0_panel {
+	/** @base: base panel struct */
+	struct exynos_panel base;
+
+	/** @i2c_pwr: i2c power supply */
+	struct regulator *i2c_pwr;
+
+	/** @avdd: avdd regulator for TDDI */
+	struct regulator *avdd;
+
+	/** @avee: avee regulator for TDDI */
+	struct regulator *avee;
+
+	/** @avdd_uV: microVolt of avdd */
+	u32 avdd_uV;
+
+	/** @avee_uV: microVolt of avee */
+	u32 avee_uV;
+};
+
+#define to_spanel(ctx) container_of(ctx, struct ts110f5mlg0_panel, base)
+
 static void ts110f5mlg0_reset(struct exynos_panel *ctx)
 {
 	dev_dbg(ctx->dev, "%s +\n", __func__);
@@ -306,6 +334,233 @@ static void ts110f5mlg0_get_panel_rev(struct exynos_panel *ctx, u32 id)
 	}
 }
 
+static int ts110f5mlg0_parse_regualtors(struct exynos_panel *ctx)
+{
+	struct device *dev = ctx->dev;
+	struct ts110f5mlg0_panel *spanel = to_spanel(ctx);
+	int count, i, ret;
+
+	ctx->vddi = devm_regulator_get(dev, "vddi");
+	if (IS_ERR(ctx->vddi)) {
+		dev_err(ctx->dev, "failed to get panel vddi\n");
+		return -EPROBE_DEFER;
+	}
+
+	/* The i2c power source and backlight enable (BL_EN) use the same hardware pin.
+	 * We should be cautious when controlling this hardware pin (b/244526124).
+	 */
+	spanel->i2c_pwr = devm_regulator_get_optional(dev, "i2c-pwr");
+	if (PTR_ERR_OR_ZERO(spanel->i2c_pwr)) {
+		dev_err(ctx->dev, "failed to get display i2c-pwr\n");
+		return -EPROBE_DEFER;
+	}
+
+	/* log the device tree status for every display bias source */
+	count = of_property_count_elems_of_size(dev->of_node, "disp_bias", sizeof(u32));
+	if (count <= 0) {
+		dev_err(ctx->dev, "failed to parse disp_bias entry\n");
+		return -EINVAL;
+	}
+	for (i = 0; i < count; ++i) {
+		struct device_node *dev_node = of_parse_phandle(dev->of_node, "disp_bias", i);
+
+		if (of_device_is_available(dev_node))
+			dev_info(ctx->dev, "%s is enabled by bootloader\n", dev_node->full_name);
+		else
+			dev_dbg(ctx->dev, "%s is disabled by bootloader\n", dev_node->full_name);
+	}
+
+	spanel->avdd = devm_regulator_get_optional(dev, "disp_avdd");
+	if (PTR_ERR_OR_ZERO(spanel->avdd)) {
+		dev_err(ctx->dev, "failed to get disp_avdd provider\n");
+		return -EPROBE_DEFER;
+	}
+
+	spanel->avee = devm_regulator_get_optional(dev, "disp_avee");
+	if (PTR_ERR_OR_ZERO(spanel->avee)) {
+		dev_err(ctx->dev, "failed to get disp_avee provider\n");
+		return -EPROBE_DEFER;
+	}
+
+	ret = of_property_read_u32(dev->of_node, "avdd-microvolt", &spanel->avdd_uV);
+	if (ret) {
+		dev_err(ctx->dev, "failed to parse avdd-microvolt: %d\n", ret);
+		return ret;
+	}
+	dev_dbg(ctx->dev, "use avdd-microvolt: %d uV\n", spanel->avdd_uV);
+
+	ret = of_property_read_u32(dev->of_node, "avee-microvolt", &spanel->avee_uV);
+	if (ret) {
+		dev_err(ctx->dev, "failed to parse avee-microvolt: %d\n", ret);
+		return ret;
+	}
+	dev_dbg(ctx->dev, "use avee-microvolt: %d uV\n", spanel->avee_uV);
+
+	return 0;
+}
+
+static int ts110f5mlg0_set_power(struct exynos_panel *ctx, bool on)
+{
+	struct ts110f5mlg0_panel *spanel = to_spanel(ctx);
+	int ret;
+
+	if (on) {
+		/* Case 1. set_power when handoff from bootloader.
+		 *    1. i2c_pwr (BL_EN) is left on (use_count = 0)
+		 *    2. ppa957db2d_set_power +
+		 *    3. ppa957db2d_set_power -
+		 *    4. i2c_pwr (BL_EN) is left on (use_count = 0)
+		 *    5. backlight driver turn on i2c_pwr (BL_EN) (use_count = 1)
+		 *
+		 * Case 2. system resume (tap to check tablet is disabled)
+		 *    1. i2c_pwr (BL_EN) is off (use_count = 0)
+		 *    2. ppa957db2d_set_power +
+		 *    3. ppa957db2d_set_power -
+		 *    4. i2c_pwr (BL_EN) is off (use_count = 0)
+		 *    5. backlight driver turn on i2c_pwr (BL_EN) (use_count = 1)
+		 *
+		 * Case 3. system resume (tap to check tablet is enabled)
+		 *    1. i2c_pwr (BL_EN) is off (use_count = 0)
+		 *    2. backlight driver turn on i2c_pwr (BL_EN) (use_count = 1)
+		 */
+		bool i2c_pwr_already_on;
+
+		/* VDDI power */
+		ret = regulator_enable(ctx->vddi);
+		if (ret) {
+			dev_err(ctx->dev, "vddi enable failed\n");
+			return ret;
+		}
+		dev_dbg(ctx->dev, "vddi enable successfully\n");
+		usleep_range(2000, 3000);
+
+		i2c_pwr_already_on = regulator_is_enabled(spanel->i2c_pwr);
+		if (!i2c_pwr_already_on) {
+			/* For case 1, the i2c_pwr (BL_EN) should be turned on manually to
+			 *     configure the AVDD/AVEE voltage level via i2c.
+			 * For case 2, the i2c_pwr (BL_EN) is already turned on (used_count = 0)
+			 *     and should not turned on here. Otherwise, it need to be turned off
+			 *     later to reset the use_count to zero. However turning off will
+			 *     affect the continuous splash feature (black flicker).
+			 */
+			ret = regulator_enable(spanel->i2c_pwr);
+			if (ret) {
+				dev_err(ctx->dev, "i2c_pwr enable failed\n");
+				return ret;
+			}
+			dev_dbg(ctx->dev, "i2c_pwr enable successfully\n");
+			usleep_range(2000, 2500);
+		}
+
+		/* AVDD power */
+		ret = regulator_enable(spanel->avdd);
+		if (ret) {
+			dev_err(ctx->dev, "avdd enable failed\n");
+			return ret;
+		}
+		dev_dbg(ctx->dev, "avdd enable successfully\n");
+
+		/* set voltage twice to fix the problem from tps65132_enable: it doesn't
+		 * restore the voltage register value via regmap_write (SW value and HW value
+		 * are inconsistent). At this time, set the voltage to target value directly
+		 * will not take effect because the direct return condition in
+		 * regulator_set_voltage_unlocked:
+		 * `voltage->min_uV == min_uV && voltage->max_uV == max_uV`
+		 */
+		if (regulator_set_voltage(spanel->avdd, spanel->avdd_uV - 100000,
+			spanel->avdd_uV - 100000) || regulator_set_voltage(spanel->avdd,
+			spanel->avdd_uV, spanel->avdd_uV)) {
+			dev_err(ctx->dev, "avdd set voltage failed\n");
+			/* If regulator_set_voltage fail, the display can still be light on
+			 * with default voltage level, should not return here.
+			 */
+		} else {
+			dev_dbg(ctx->dev, "avdd set voltage successfully\n");
+		}
+		usleep_range(1000, 1100);
+
+		/* AVEE power */
+		ret = regulator_enable(spanel->avee);
+		if (ret) {
+			dev_err(ctx->dev, "avee enable failed\n");
+			return ret;
+		}
+		dev_dbg(ctx->dev, "avee enable successfully\n");
+
+		/* set voltage twice as AVDD */
+		if (regulator_set_voltage(spanel->avee, spanel->avee_uV - 100000,
+			spanel->avee_uV - 100000) || regulator_set_voltage(spanel->avee,
+			spanel->avee_uV, spanel->avee_uV)) {
+			dev_err(ctx->dev, "avee set voltage failed\n");
+			/* If regulator_set_voltage fail, the display can still be light on
+			 * with default voltage level, should not return here.
+			 */
+		} else {
+			dev_dbg(ctx->dev, "avee set voltage successfully\n");
+		}
+		usleep_range(1000, 1100);
+
+		if (!i2c_pwr_already_on) {
+			/* For case 2, the i2c_pwr (BL_EN) should be reset to use_count 0.
+			 * Such that the backlight driver can fully control on the BL_EN.
+			 */
+			if (regulator_disable(spanel->i2c_pwr))
+				dev_err(ctx->dev, "i2c_pwr disable failed\n");
+			else
+				dev_dbg(ctx->dev, "i2c_pwr disable successfully\n");
+		}
+	} else {
+		/* Case 1. system suspend (tap to check tablet is disabled)
+		 *    1. i2c_pwr (BL_EN) is on (use_count = 1)
+		 *    2. backlight driver turn off i2c_pwr (BL_EN) (use_count = 0)
+		 *    3. ppa957db2d_set_power +
+		 *    4. only turn off DISP_PMIC_ENABLE gpio pin, no i2c access here.
+		 *    5. ppa957db2d_set_power -
+		 *
+		 * Case 2. system suspend (tap to check tablet is enabled)
+		 *    1. i2c_pwr (BL_EN) is on (use_count = 1)
+		 *    2. backlight driver turn off i2c_pwr (BL_EN) (use_count = 0)
+		 */
+		gpiod_set_value(ctx->reset_gpio, 0);
+
+		ret = regulator_disable(spanel->avee);
+		if (ret) {
+			dev_err(ctx->dev, "avee disable failed\n");
+			return ret;
+		}
+		dev_dbg(ctx->dev, "avee disable successfully\n");
+		usleep_range(1000, 1100);
+
+		ret = regulator_disable(spanel->avdd);
+		if (ret) {
+			dev_err(ctx->dev, "avdd disable failed\n");
+			return ret;
+		}
+		dev_dbg(ctx->dev, "avdd disable successfully\n");
+		usleep_range(6000, 7000);
+
+		ret = regulator_disable(ctx->vddi);
+		if (ret) {
+			dev_err(ctx->dev, "vddi disable failed\n");
+			return ret;
+		}
+		dev_dbg(ctx->dev, "vddi disable successfully\n");
+	}
+
+	return 0;
+}
+
+static int ts110f5mlg0_panel_probe(struct mipi_dsi_device *dsi)
+{
+	struct ts110f5mlg0_panel *spanel;
+
+	spanel = devm_kzalloc(&dsi->dev, sizeof(*spanel), GFP_KERNEL);
+	if (!spanel)
+		return -ENOMEM;
+
+	return exynos_panel_common_init(dsi, &spanel->base);
+}
+
 static const struct exynos_panel_mode ts110f5mlg0_modes[] = {
 	{
 		/* 1600x2560 @ 60 */
@@ -348,6 +603,8 @@ static const struct exynos_panel_funcs ts110f5mlg0_exynos_funcs = {
 	.set_brightness = exynos_panel_set_brightness,
 	.set_cabc_mode = ts110f5mlg0_set_cabc_mode,
 	.get_panel_rev = ts110f5mlg0_get_panel_rev,
+	.parse_regulators = ts110f5mlg0_parse_regualtors,
+	.set_power = ts110f5mlg0_set_power,
 };
 
 const struct brightness_capability ts110f5mlg0_brightness_capability = {
@@ -393,7 +650,7 @@ static const struct of_device_id exynos_panel_of_match[] = {
 MODULE_DEVICE_TABLE(of, exynos_panel_of_match);
 
 static struct mipi_dsi_driver exynos_panel_driver = {
-	.probe = exynos_panel_probe,
+	.probe = ts110f5mlg0_panel_probe,
 	.remove = exynos_panel_remove,
 	.driver = {
 		.name = "panel-boe-ts110f5mlg0",

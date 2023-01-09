@@ -10,3 +10,5 @@ pwm-samsung.ko
 rt4539_bl.ko
 panel-boe-ts110f5mlg0.ko
 panel-csot-ppa957db2d.ko
+rt4801-regulator.ko
+tps65132-regulator.ko
