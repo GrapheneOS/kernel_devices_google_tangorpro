@@ -40,6 +40,7 @@
 #define KEEP_HUB_PATH 2
 
 #define POGO_VOTER "POGO"
+#define SSPHY_RESTART_EL "SSPHY_RESTART"
 
 enum pogo_event_type {
 	/* Reported when docking status changes */
@@ -67,6 +68,8 @@ enum pogo_event_type {
 	/* Bypass the accessory detection and enable POGO Vout and POGO USB capability */
 	/* This event is for debug only and never used in normal operations. */
 	EVENT_FORCE_ACC_CONNECT,
+	/* Reported when CC orientation has changed */
+	EVENT_ORIENTATION_CHANGED,
 };
 
 static bool modparam_force_usb;
@@ -160,12 +163,16 @@ struct pogo_transport {
 	/* When true, disable voltage based detection of pogo partners */
 	bool disable_voltage_detection;
 	struct gvotable_election *charger_mode_votable;
+	struct gvotable_election *ssphy_restart_votable;
 
 	/* Used for cancellable work such as pogo debouncing */
 	struct kthread_delayed_work pogo_accessory_debounce_work;
 
 	/* Pogo accessory detection status */
 	enum pogo_accessory_detection accessory_detection_enabled;
+
+	/* Orientation of USB-C, 0:TYPEC_POLARITY_CC1 1:TYPEC_POLARITY_CC2 */
+	enum typec_cc_polarity polarity;
 };
 
 static const unsigned int pogo_extcon_cable[] = {
@@ -202,6 +209,21 @@ static void update_extcon_dev(struct pogo_transport *pogo_transport, bool docked
 		dev_err(pogo_transport->dev, "%s Failed to clear EXTCON_USB\n", __func__);
 }
 
+static void ssphy_restart_control(struct pogo_transport *pogo_transport, bool enable)
+{
+	if (!pogo_transport->ssphy_restart_votable)
+		pogo_transport->ssphy_restart_votable =
+				gvotable_election_get_handle(SSPHY_RESTART_EL);
+
+	if (IS_ERR_OR_NULL(pogo_transport->ssphy_restart_votable)) {
+		logbuffer_log(pogo_transport->log, "SSPHY_RESTART get failed %ld\n",
+			      PTR_ERR(pogo_transport->ssphy_restart_votable));
+		return;
+	}
+
+	gvotable_cast_long_vote(pogo_transport->ssphy_restart_votable, POGO_VOTER, enable, enable);
+}
+
 static void disable_and_bypass_hub(struct pogo_transport *pogo_transport)
 {
 	int ret;
@@ -214,6 +236,12 @@ static void disable_and_bypass_hub(struct pogo_transport *pogo_transport)
 	logbuffer_log(pogo_transport->log, "POGO: hub-mux:%d",
 		      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
 	pogo_transport->pogo_hub_active = false;
+
+	/*
+	 * No further action in the callback of the votable if it is disabled. Disable it here for
+	 * the bookkeeping purpose in the dumpstate.
+	 */
+	ssphy_restart_control(pogo_transport, false);
 
 	if (pogo_transport->hub_ldo && regulator_is_enabled(pogo_transport->hub_ldo) > 0) {
 		ret = regulator_disable(pogo_transport->hub_ldo);
@@ -445,8 +473,28 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 		}
 		break;
 	case EVENT_MOVE_DATA_TO_USB:
-		if (pogo_transport->pogo_usb_active)
+		if (pogo_transport->pogo_usb_active) {
 			switch_to_usbc_locked(pogo_transport);
+
+			/*
+			 * During the function call "switch_to_usbc_locked", the USB controller
+			 * restarted and the orientation of the USB phy was reset to the default
+			 * value CC1 because Type-C drivers had no chance to update the real
+			 * orientation. Update and restart the superspeed phy if CC2 is connected.
+			 */
+			if (pogo_transport->polarity == TYPEC_POLARITY_CC2) {
+				union extcon_property_value prop;
+				prop.intval = (int)TYPEC_POLARITY_CC2;
+				ret = extcon_set_property_sync(chip->extcon, EXTCON_USB_HOST,
+							       EXTCON_PROP_USB_TYPEC_POLARITY,
+							       prop);
+				if (ret)
+					logbuffer_log(pogo_transport->log,
+						      "Failed to set polarity, ret %d", ret);
+
+				ssphy_restart_control(pogo_transport, true);
+			}
+		}
 		break;
 	case EVENT_MOVE_DATA_TO_POGO:
 		/* Currently this event is bundled to force_pogo. This case is unreachable. */
@@ -605,6 +653,20 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 		pogo_transport->pogo_usb_capable = true;
 		break;
 #endif
+	case EVENT_ORIENTATION_CHANGED:
+		/* Update the orientation and restart the ssphy if hub is enabled */
+		if (pogo_transport->pogo_hub_active) {
+			union extcon_property_value prop;
+			prop.intval = (int)pogo_transport->polarity;
+			ret = extcon_set_property_sync(chip->extcon, EXTCON_USB_HOST,
+						       EXTCON_PROP_USB_TYPEC_POLARITY, prop);
+			if (ret)
+				logbuffer_log(pogo_transport->log, "Failed to set polarity, ret %d",
+					      ret);
+
+			ssphy_restart_control(pogo_transport, true);
+		}
+		break;
 	default:
 		break;
 	}
@@ -747,6 +809,17 @@ static void data_active_changed(void *data)
 
 	logbuffer_log(pogo_transport->log, "data active changed");
 	pogo_transport_event(pogo_transport, EVENT_DATA_ACTIVE_CHANGED, 0);
+}
+
+static void orientation_changed(void *data)
+{
+	struct pogo_transport *pogo_transport = data;
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	if (pogo_transport->polarity != chip->polarity) {
+		pogo_transport->polarity = chip->polarity;
+		pogo_transport_event(pogo_transport, EVENT_ORIENTATION_CHANGED, 0);
+	}
 }
 
 static irqreturn_t pogo_isr(int irq, void *dev_id)
@@ -1236,6 +1309,9 @@ static int pogo_transport_probe(struct platform_device *pdev)
 #endif
 
 	register_data_active_callback(data_active_changed, pogo_transport);
+	register_orientation_callback(orientation_changed, pogo_transport);
+	/* run once in case orientation has changed before registering the callback */
+	orientation_changed((void *)pogo_transport);
 	dev_info(&pdev->dev, "force usb:%d\n", modparam_force_usb ? 1 : 0);
 	put_device(&data_client->dev);
 	of_node_put(data_np);
@@ -1364,8 +1440,8 @@ static ssize_t enable_hub_store(struct device *dev, struct device_attribute *att
 	else
 		pogo_transport->force_hub_enabled = false;
 
-	logbuffer_log(pogo_transport->log, "%s: %sable hub, force_hub_enabled %u", __func__,
-		      enable_hub ? "en" : "dis", pogo_transport->force_hub_enabled);
+	dev_info(pogo_transport->dev, "hub %u, force_hub_enabled %u\n", enable_hub,
+		 pogo_transport->force_hub_enabled);
 	if (enable_hub)
 		pogo_transport_event(pogo_transport, EVENT_ENABLE_HUB, 0);
 	else
@@ -1391,8 +1467,7 @@ static ssize_t hall1_s_store(struct device *dev, struct device_attribute *attr, 
 		return size;
 
 	if (!pogo_transport->accessory_detection_enabled) {
-		logbuffer_log(pogo_transport->log, "%s:Accessory detection disabled ? skipping",
-			      __func__);
+		dev_info(pogo_transport->dev, "Accessory detection disabled\n");
 		return size;
 	}
 
@@ -1413,8 +1488,8 @@ static ssize_t hall1_s_store(struct device *dev, struct device_attribute *attr, 
 	else
 		pogo_transport->mfg_acc_test = false;
 
-	logbuffer_log(pogo_transport->log, "%s: %sable accessory detection, mfg %u", __func__,
-		      enable_acc_detect ? "en" : "dis", pogo_transport->mfg_acc_test);
+	dev_info(pogo_transport->dev, "accessory detection %u, mfg %u\n", enable_acc_detect,
+		 pogo_transport->mfg_acc_test);
 	if (enable_acc_detect)
 		pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_DETECTED, 0);
 	else
