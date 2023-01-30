@@ -15,7 +15,7 @@
 };
 
 &s2mpu_dpu0 {
-	always-on;
+	dma-cons = <&drmdecon0>;
 };
 
 &hsi2c_6 {
