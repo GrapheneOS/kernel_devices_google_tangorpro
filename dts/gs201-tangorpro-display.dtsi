@@ -104,7 +104,6 @@
 		 * If bootloader probed rt4801_bias successfully, it will change
 		 * tps65132_bias to status = "disabled"
 		 */
-		status = "okay";
 		compatible = "ti,tps65132";
 		reg = <0x3e>;
 
@@ -129,7 +128,6 @@
 		 * If bootloader probed tps65132_bias successfully, it will change
 		 * rt4801_bias to status = "disabled"
 		 */
-		status = "okay";
 		compatible = "richtek,rt4801";
 		reg = <0x73>;
 		enable-gpios = <&gpp23 1 GPIO_ACTIVE_HIGH>;
