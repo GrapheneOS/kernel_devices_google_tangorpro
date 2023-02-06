@@ -20,6 +20,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regulator/consumer.h>
+#include <linux/spinlock.h>
 #include <linux/usb.h>
 #include <linux/usb/tcpm.h>
 #include <misc/gvotable.h>
@@ -39,9 +40,91 @@
 
 #define KEEP_USB_PATH 2
 #define KEEP_HUB_PATH 2
+#define DEFAULT_STATE_MACHINE_ENABLE false
 
 #define POGO_VOTER "POGO"
 #define SSPHY_RESTART_EL "SSPHY_RESTART"
+
+/*
+ * State Description:
+ *	INVALID_STATE,
+ *  (A)	STANDBY,			// Nothing attached, hub disabled
+ *	DOCKING_DEBOUNCED,		// STANDBY -> DOCK_HUB, pogo gpio
+ *	STANDBY_ACC_DEBOUNCED,		// STANDBY -> ACC_DIRECT, acc gpio
+ *  (B)	DOCK_HUB,			// Dock online, hub enabled
+ *  (C)	DOCK_DEVICE_HUB,		// Dock online, usb device online, hub enabled
+ *  (H)	DOCK_AUDIO_HUB,			// Dock online, usb audio online, hub enabled
+ *  (I)	AUDIO_HUB,			// Usb audio online, hub enabled
+ *	AUDIO_HUB_DOCKING_DEBOUNCED,	// AUDIO_HUB -> DOCK_AUDIO_HUB, pogo gpio
+ *	AUDIO_HUB_ACC_DEBOUNCED,	// AUDIO_HUB -> ACC_AUDIO_HUB, acc gpio
+ *  (D)	DEVICE_HUB,			// Usb device online, hub enabled
+ *      DEVICE_HUB_DOCKING_DEBOUNCED,   // DEVICE_HUB -> DOCK_DEVICE_HUB, pogo gpio
+ *      DEVICE_HUB_ACC_DEBOUNCED,	// DEVICE_HUB -> ACC_DEVICE_HUB, acc gpio
+ *  (E)	DEVICE_DIRECT,			// Usb device online, hub disabled
+ *	DEVICE_DOCKING_DEBOUNCED,	// DEVICE_DIRECT -> DOCK_DEVICE_HUB, pogo gpio
+ *	DEVICE_DIRECT_ACC_DEBOUNCED,	// DEVICE_DIRECT -> ACC_DEVICE_HUB, acc gpio
+ *  (F)	AUDIO_DIRECT,			// Usb audio online, hub disabled
+ *	AUDIO_DIRECT_DOCKING_DEBOUNCED,	// AUDIO_DIRECT -> AUDIO_DIRECT_DOCK_OFFLINE, pogo gpio
+ *	AUDIO_DIRECT_ACC_DEBOUNCED,	// AUDIO_DIRECT -> ACC_DEVICE_HUB, acc gpio
+ *  (G)	AUDIO_DIRECT_DOCK_OFFLINE,	// Usb audio online, dock offline, hub disabled
+ *  (J)	HOST_DIRECT,			// Usb host online, hub disabled
+ *	HOST_DIRECT_DOCKING_DEBOUNCED,	// HOST_DIRECT -> HOST_DIRECT_DOCK_OFFLINE, pogo gpio
+ *  (K)	HOST_DIRECT_DOCK_OFFLINE,	// Usb host online, dock offline, hub disabled
+ *      HOST_DIRECT_ACC_DEBOUNCED,	// HOST_DIRECT -> HOST_DIRECT_ACC_OFFLINE, acc gpio
+ *  (L)	DOCK_HUB_HOST_OFFLINE,		// Dock online, usb host offline, hub enabled
+ *  (M)	ACC_DIRECT,			// Acc online, hub disabled
+ *  (N)	ACC_DEVICE_HUB,			// Acc online, usb device online, hub enabled
+ *  (O)	ACC_HUB,			// Acc online, hub enabled
+ *  (P)	ACC_AUDIO_HUB,			// Acc online, usb audio online, hub enabled
+ *  (Q)	LID_CLOSE,
+ *  (R)	HOST_DIRECT_ACC_OFFLINE,	// Usb host online, acc offline, hub disabled
+ *  (S)	ACC_DIRECT_HOST_OFFLINE,	// Acc online, usb host offline
+ */
+
+#define FOREACH_STATE(S)			\
+	S(INVALID_STATE),			\
+	S(STANDBY),				\
+	S(DOCKING_DEBOUNCED),			\
+	S(STANDBY_ACC_DEBOUNCED),		\
+	S(DOCK_HUB),				\
+	S(DOCK_DEVICE_HUB),			\
+	S(DOCK_AUDIO_HUB),			\
+	S(AUDIO_HUB),				\
+	S(AUDIO_HUB_DOCKING_DEBOUNCED),		\
+	S(AUDIO_HUB_ACC_DEBOUNCED),		\
+	S(DEVICE_HUB),				\
+	S(DEVICE_HUB_DOCKING_DEBOUNCED),	\
+	S(DEVICE_HUB_ACC_DEBOUNCED),		\
+	S(DEVICE_DIRECT),			\
+	S(DEVICE_DOCKING_DEBOUNCED),		\
+	S(DEVICE_DIRECT_ACC_DEBOUNCED),		\
+	S(AUDIO_DIRECT),			\
+	S(AUDIO_DIRECT_DOCKING_DEBOUNCED),	\
+	S(AUDIO_DIRECT_ACC_DEBOUNCED),		\
+	S(AUDIO_DIRECT_DOCK_OFFLINE),		\
+	S(HOST_DIRECT),				\
+	S(HOST_DIRECT_DOCKING_DEBOUNCED),	\
+	S(HOST_DIRECT_DOCK_OFFLINE),		\
+	S(HOST_DIRECT_ACC_DEBOUNCED),		\
+	S(DOCK_HUB_HOST_OFFLINE),		\
+	S(ACC_DIRECT),				\
+	S(ACC_DEVICE_HUB),			\
+	S(ACC_HUB),				\
+	S(ACC_AUDIO_HUB),			\
+	S(LID_CLOSE),				\
+	S(HOST_DIRECT_ACC_OFFLINE),		\
+	S(ACC_DIRECT_HOST_OFFLINE)
+
+#define GENERATE_ENUM(e)	e
+#define GENERATE_STRING(s)	#s
+
+enum pogo_state {
+	FOREACH_STATE(GENERATE_ENUM)
+};
+
+static const char * const pogo_states[] = {
+	FOREACH_STATE(GENERATE_STRING)
+};
 
 enum pogo_event_type {
 	/* Reported when docking status changes */
@@ -73,6 +156,16 @@ enum pogo_event_type {
 	EVENT_ORIENTATION_CHANGED,
 };
 
+#define EVENT_POGO_IRQ			BIT(0)
+#define EVENT_USBC_DATA_CHANGE		BIT(1)
+#define EVENT_ENABLE_USB_DATA		BIT(2)
+#define EVENT_HES_H1S_CHANGED		BIT(3)
+#define EVENT_ACC_GPIO_ACTIVE		BIT(4)
+#define EVENT_ACC_CONNECTED		BIT(5)
+#define EVENT_AUDIO_DEV_ATTACHED	BIT(6)
+#define EVENT_USBC_ORIENTATION		BIT(7)
+#define EVENT_LAST_EVENT_TYPE		BIT(63)
+
 static bool modparam_force_usb;
 module_param_named(force_usb, modparam_force_usb, bool, 0644);
 MODULE_PARM_DESC(force_usb, "Force enabling usb path over pogo");
@@ -81,6 +174,11 @@ MODULE_PARM_DESC(force_usb, "Force enabling usb path over pogo");
 static int modparam_pogo_accessory_enable;
 module_param_named(pogo_accessory_enable, modparam_pogo_accessory_enable, int, 0644);
 MODULE_PARM_DESC(pogo_accessory_enable, "Enabling accessory detection over pogo");
+
+/* Set to 1 (enable) or 2 (disable) to override the default value */
+static int modparam_state_machine_enable;
+module_param_named(state_machine_enable, modparam_state_machine_enable, int, 0644);
+MODULE_PARM_DESC(state_machine_enable, "Enabling pogo state machine transition");
 
 struct pogo_event {
 	struct kthread_delayed_work work;
@@ -104,6 +202,11 @@ enum pogo_accessory_detection {
 	 * EVENT_POGO_ACC_CONNECTED -> EVENT_HALL_SENSOR_ACC_UNDOCKED
 	 */
 	ENABLED
+};
+
+struct pogo_transport_udev_ids {
+	__le16 vendor;
+	__le16 product;
 };
 
 struct pogo_transport {
@@ -154,8 +257,21 @@ struct pogo_transport {
 	 * Only applicable for debugfs capable builds.
 	 */
 	bool mock_hid_connected;
-	struct kthread_worker *wq;
 
+	struct kthread_worker *wq;
+	struct kthread_delayed_work state_machine;
+	struct kthread_work event_work;
+	enum pogo_state prev_state;
+	enum pogo_state state;
+	enum pogo_state delayed_state;
+	unsigned long delayed_runtime;
+	unsigned long delay_ms;
+	unsigned long event_map;
+	bool state_machine_running;
+	bool state_machine_enabled;
+	spinlock_t pogo_event_lock;
+
+	/* Register the notifier from USB core */
 	struct notifier_block udev_nb;
 
 	/* To read voltage at the pogo pins */
@@ -177,6 +293,10 @@ struct pogo_transport {
 
 	/* Orientation of USB-C, 0:TYPEC_POLARITY_CC1 1:TYPEC_POLARITY_CC2 */
 	enum typec_cc_polarity polarity;
+
+	/* Cache values from the Type-C driver */
+	enum typec_data_role usbc_data_role;
+	bool usbc_data_active;
 };
 
 static const unsigned int pogo_extcon_cable[] = {
@@ -184,6 +304,32 @@ static const unsigned int pogo_extcon_cable[] = {
 	EXTCON_DOCK,
 	EXTCON_NONE,
 };
+
+/*
+ * list of USB VID:PID pair of udevs which are audio docks with pogo interfaces
+ * Both VID and PID are required in each entry.
+ */
+static const struct pogo_transport_udev_ids audio_dock_ids[] = {
+	{
+		.vendor = cpu_to_le16(0x18d1),
+		.product = cpu_to_le16(0x9480),
+	},
+	{ },
+};
+
+/* Return true if @vid and @pid pair is found in @list. Otherwise, return false. */
+static bool pogo_transport_match_udev(const struct pogo_transport_udev_ids *list, const u16 vid,
+				      const u16 pid)
+{
+	if (list) {
+		while (list->vendor && list->product) {
+			if (list->vendor == cpu_to_le16(vid) && list->product == cpu_to_le16(pid))
+				return true;
+			list++;
+		}
+	}
+	return false;
+}
 
 static void pogo_transport_event(struct pogo_transport *pogo_transport,
 				 enum pogo_event_type event_type, int delay_ms);
@@ -226,6 +372,7 @@ static void ssphy_restart_control(struct pogo_transport *pogo_transport, bool en
 		return;
 	}
 
+	logbuffer_log(pogo_transport->log, "ssphy_restart_control %u", enable);
 	gvotable_cast_long_vote(pogo_transport->ssphy_restart_votable, POGO_VOTER, enable, enable);
 }
 
@@ -752,6 +899,967 @@ static void pogo_transport_event(struct pogo_transport *pogo_transport,
 	kthread_mod_delayed_work(pogo_transport->wq, &evt->work, msecs_to_jiffies(delay_ms));
 }
 
+/*-------------------------------------------------------------------------*/
+/* State Machine Functions                                                 */
+/*-------------------------------------------------------------------------*/
+
+/*
+ * State transition
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_set_state(struct pogo_transport *pogo_transport, enum pogo_state state,
+				     unsigned int delay_ms)
+{
+	if (delay_ms) {
+		logbuffer_log(pogo_transport->log, "pending state change %s -> %s @ %u ms",
+			      pogo_states[pogo_transport->state], pogo_states[state], delay_ms);
+		pogo_transport->delayed_state = state;
+		kthread_mod_delayed_work(pogo_transport->wq, &pogo_transport->state_machine,
+					 msecs_to_jiffies(delay_ms));
+		pogo_transport->delayed_runtime = jiffies + msecs_to_jiffies(delay_ms);
+		pogo_transport->delay_ms = delay_ms;
+	} else {
+		logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO, "state change %s -> %s",
+			       pogo_states[pogo_transport->state], pogo_states[state]);
+		pogo_transport->delayed_state = INVALID_STATE;
+		pogo_transport->prev_state = pogo_transport->state;
+		pogo_transport->state = state;
+
+		if (!pogo_transport->state_machine_running)
+			kthread_mod_delayed_work(pogo_transport->wq, &pogo_transport->state_machine,
+						 0);
+	}
+}
+
+/*
+ * Accessory Detection regulator control
+ *  - Return -ENXIO if Accessory Detection regulator does not exist
+ *  - Return 0 if @enable is the same as the status of the regulator
+ *  - Otherwise, return the return value from regulator_enable or regulator_disable
+ */
+static int pogo_transport_acc_regulator(struct pogo_transport *pogo_transport, bool enable)
+{
+	int ret;
+
+	if (!pogo_transport->acc_detect_ldo)
+		return -ENXIO;
+
+	if (regulator_is_enabled(pogo_transport->acc_detect_ldo) == enable)
+		return 0;
+
+	if (enable)
+		ret = regulator_enable(pogo_transport->acc_detect_ldo);
+	else
+		ret = regulator_disable(pogo_transport->acc_detect_ldo);
+
+	return ret;
+}
+
+/*
+ * Call this function to:
+ *  - Disable POGO Vout by voting 0 to charger_mode_votable
+ *  - Disable the regulator for Accessory Detection Logic
+ *  - Disable Accessory Detection IRQ
+ *  - Enable POGO Voltage Detection IRQ
+ *
+ *  This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_reset_acc_detection(struct pogo_transport *pogo_transport)
+{
+	int ret;
+
+	ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable, POGO_VOTER,
+				      GBMS_POGO_VOUT, 0);
+	if (ret)
+		logbuffer_log(pogo_transport->log, "%s: Failed to unvote VOUT, ret %d", __func__,
+			      ret);
+
+	ret = pogo_transport_acc_regulator(pogo_transport, false);
+	if (ret)
+		logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect %d", __func__,
+			      ret);
+
+	if (pogo_transport->acc_irq_enabled) {
+		disable_irq(pogo_transport->pogo_acc_irq);
+		pogo_transport->acc_irq_enabled = false;
+	}
+
+	if (!pogo_transport->pogo_irq_enabled) {
+		enable_irq(pogo_transport->pogo_irq);
+		pogo_transport->pogo_irq_enabled = true;
+	}
+}
+
+/*
+ * This function implements the actions unon entering each state.
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_run_state_machine(struct pogo_transport *pogo_transport)
+{
+	bool acc_detected = gpio_get_value(pogo_transport->pogo_acc_gpio);
+	bool docked = !gpio_get_value(pogo_transport->pogo_gpio);
+	struct max77759_plat *chip = pogo_transport->chip;
+	int ret;
+
+	switch (pogo_transport->state) {
+	case STANDBY:
+		/* DATA_STATUS_ENABLED */
+		break;
+	case DOCKING_DEBOUNCED:
+		if (docked) {
+			update_extcon_dev(pogo_transport, true, true);
+			switch_to_hub_locked(pogo_transport);
+			pogo_transport_set_state(pogo_transport, DOCK_HUB, 0);
+		} else {
+			pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		}
+		break;
+	case DOCK_HUB:
+		/* clear Dock dock detected notification */
+		/* Clear accessory detected notification */
+		/* DATA_STATUS_DISABLED_DEVICE_DOCK */
+		break;
+	case DEVICE_DOCKING_DEBOUNCED:
+		if (docked) {
+			update_extcon_dev(pogo_transport, true, true);
+			switch_to_hub_locked(pogo_transport);
+			/* switch_to_hub_locked cleared data_active, set it here */
+			chip->data_active = true;
+			pogo_transport_set_state(pogo_transport, DOCK_DEVICE_HUB, 0);
+		} else {
+			pogo_transport_set_state(pogo_transport, DEVICE_DIRECT, 0);
+		}
+		break;
+	case DOCK_DEVICE_HUB:
+		/* DATA_STATUS_DISABLED_DEVICE_DOCK */
+		break;
+	case DEVICE_HUB_DOCKING_DEBOUNCED:
+		if (docked) {
+			update_extcon_dev(pogo_transport, true, true);
+			pogo_transport_set_state(pogo_transport, DOCK_DEVICE_HUB, 0);
+		} else {
+			pogo_transport_set_state(pogo_transport, DEVICE_HUB, 0);
+		}
+		break;
+	case AUDIO_DIRECT_DOCKING_DEBOUNCED:
+		if (docked) {
+			update_extcon_dev(pogo_transport, true, true);
+			pogo_transport_set_state(pogo_transport, AUDIO_DIRECT_DOCK_OFFLINE, 0);
+		} else {
+			pogo_transport_set_state(pogo_transport, AUDIO_DIRECT, 0);
+		}
+		break;
+	case AUDIO_DIRECT_DOCK_OFFLINE:
+		/* Push Dock dock detected notification */
+		break;
+	case AUDIO_HUB_DOCKING_DEBOUNCED:
+		if (docked) {
+			update_extcon_dev(pogo_transport, true, true);
+			pogo_transport_set_state(pogo_transport, DOCK_AUDIO_HUB, 0);
+		} else {
+			pogo_transport_set_state(pogo_transport, AUDIO_HUB, 0);
+		}
+		break;
+	case HOST_DIRECT:
+		/* DATA_STATUS_ENABLED */
+		/* Clear Pogo accessory Detected */
+		/* Clear USB accessory detected notification */
+		break;
+	case HOST_DIRECT_DOCKING_DEBOUNCED:
+		if (docked) {
+			update_extcon_dev(pogo_transport, true, true);
+			pogo_transport_set_state(pogo_transport, HOST_DIRECT_DOCK_OFFLINE, 0);
+		} else {
+			pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
+		}
+		break;
+	case HOST_DIRECT_DOCK_OFFLINE:
+		/* Push Dock dock detected notification */
+		break;
+	case DOCK_HUB_HOST_OFFLINE:
+		/* Push accessory detected notification */
+		break;
+	case STANDBY_ACC_DEBOUNCED:
+	case DEVICE_DIRECT_ACC_DEBOUNCED:
+	case DEVICE_HUB_ACC_DEBOUNCED:
+	case AUDIO_DIRECT_ACC_DEBOUNCED:
+	case AUDIO_HUB_ACC_DEBOUNCED:
+	case HOST_DIRECT_ACC_DEBOUNCED:
+		/* debounce fail; leave the IRQ and regulator enabled and do nothing */
+		if (!acc_detected)
+			break;
+
+		/*
+		 * Disable the IRQ to ignore the noise after POGO Vout is enabled. It will be
+		 * re-enabled when HES reports the attach event.
+		 */
+		if (pogo_transport->acc_irq_enabled) {
+			disable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = false;
+		}
+
+		/* TODO: queue work for gvotable cast vote if it takes too much time */
+		ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable, POGO_VOTER,
+					      GBMS_POGO_VOUT, 1);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to vote VOUT, ret %d",
+				      __func__, ret);
+		break;
+	case ACC_DIRECT:
+		/* Clear Pogo accessory Detected */
+		/* Clear USB accessory detected notification */
+		break;
+	case ACC_DEVICE_HUB:
+		/* DATA_STATUS_DISABLED_DEVICE_DOCK */
+		break;
+	case HOST_DIRECT_ACC_OFFLINE:
+		/* Push Pogo accessory Detected */
+		break;
+	default:
+		break;
+	}
+}
+
+/* Main loop of the State Machine */
+static void pogo_transport_state_machine_work(struct kthread_work *work)
+{
+	struct pogo_transport *pogo_transport =
+			container_of(container_of(work, struct kthread_delayed_work, work),
+			     struct pogo_transport, state_machine);
+	struct max77759_plat *chip = pogo_transport->chip;
+	enum pogo_state prev_state;
+
+	mutex_lock(&chip->data_path_lock);
+	pogo_transport->state_machine_running = true;
+
+	if (pogo_transport->delayed_state) {
+		logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO,
+			       "state change %s -> %s [delayed %ld ms]",
+			       pogo_states[pogo_transport->state],
+			       pogo_states[pogo_transport->delayed_state],
+			       pogo_transport->delay_ms);
+		pogo_transport->prev_state = pogo_transport->state;
+		pogo_transport->state = pogo_transport->delayed_state;
+		pogo_transport->delayed_state = INVALID_STATE;
+	}
+
+	do {
+		prev_state = pogo_transport->state;
+		pogo_transport_run_state_machine(pogo_transport);
+	} while (pogo_transport->state != prev_state && !pogo_transport->delayed_state);
+
+	pogo_transport->state_machine_running = false;
+	mutex_unlock(&chip->data_path_lock);
+}
+
+/*
+ * Called when POGO Voltage Detection IRQ is active
+ *  - Triggered from event: EVENT_POGO_IRQ
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_pogo_irq_active(struct pogo_transport *pogo_transport)
+{
+	switch (pogo_transport->state) {
+	case STANDBY:
+		pogo_transport_set_state(pogo_transport, DOCKING_DEBOUNCED, POGO_PSY_DEBOUNCE_MS);
+		break;
+	case DEVICE_HUB:
+		pogo_transport_set_state(pogo_transport, DEVICE_HUB_DOCKING_DEBOUNCED,
+					 POGO_PSY_DEBOUNCE_MS);
+		break;
+	case DEVICE_DIRECT:
+		pogo_transport_set_state(pogo_transport, DEVICE_DOCKING_DEBOUNCED,
+					 POGO_PSY_DEBOUNCE_MS);
+		break;
+	case AUDIO_DIRECT:
+		pogo_transport_set_state(pogo_transport, AUDIO_DIRECT_DOCKING_DEBOUNCED,
+					 POGO_PSY_DEBOUNCE_MS);
+		break;
+	case AUDIO_HUB:
+		pogo_transport_set_state(pogo_transport, AUDIO_HUB_DOCKING_DEBOUNCED,
+					 POGO_PSY_DEBOUNCE_MS);
+		break;
+	case HOST_DIRECT:
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT_DOCKING_DEBOUNCED,
+					 POGO_PSY_DEBOUNCE_MS);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when POGO Voltage Detection IRQ is standby
+ *  - Triggered from event: EVENT_POGO_IRQ
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_pogo_irq_standby(struct pogo_transport *pogo_transport)
+{
+	switch (pogo_transport->state) {
+	case STANDBY:
+		update_extcon_dev(pogo_transport, false, false);
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		break;
+	case DOCK_HUB:
+		update_extcon_dev(pogo_transport, false, false);
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		break;
+	case DOCK_DEVICE_HUB:
+		update_extcon_dev(pogo_transport, false, false);
+		pogo_transport_set_state(pogo_transport, DEVICE_HUB, 0);
+		break;
+	case DOCK_AUDIO_HUB:
+		update_extcon_dev(pogo_transport, false, false);
+		pogo_transport_set_state(pogo_transport, AUDIO_HUB, 0);
+		break;
+	case AUDIO_DIRECT_DOCK_OFFLINE:
+		update_extcon_dev(pogo_transport, false, false);
+		pogo_transport_set_state(pogo_transport, AUDIO_DIRECT, 0);
+		break;
+	case HOST_DIRECT_DOCK_OFFLINE:
+		update_extcon_dev(pogo_transport, false, false);
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
+		break;
+	case DOCK_HUB_HOST_OFFLINE:
+		update_extcon_dev(pogo_transport, false, false);
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when USB-C port enters Host Mode
+ *  - Triggered from event: EVENT_USBC_DATA_CHANGE
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_usbc_host_on(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	switch (pogo_transport->state) {
+	case STANDBY:
+		pogo_transport_set_state(pogo_transport, DEVICE_DIRECT, 0);
+		break;
+	case DOCK_HUB:
+		/* Set data_active since USB-C device is attached */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, DOCK_DEVICE_HUB, 0);
+		break;
+	case ACC_DIRECT:
+		switch_to_hub_locked(pogo_transport);
+		/* Set data_active since USB-C device is attached */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
+		break;
+	case ACC_HUB:
+		/* Set data_active since USB-C device is attached */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when USB-C port leaves Host Mode
+ *  - Triggered from event: EVENT_USBC_DATA_CHANGE
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_usbc_host_off(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	switch (pogo_transport->state) {
+	case DOCK_DEVICE_HUB:
+		/* Clear data_active since USB-C device is detached */
+		chip->data_active = false;
+		pogo_transport_set_state(pogo_transport, DOCK_HUB, 0);
+		break;
+	case DEVICE_HUB:
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		break;
+	case DEVICE_DIRECT:
+	case AUDIO_DIRECT:
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		break;
+	case AUDIO_DIRECT_DOCK_OFFLINE:
+		switch_to_hub_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, DOCK_HUB, 0);
+		break;
+	case DOCK_AUDIO_HUB:
+		/* Clear data_active since USB-C device is detached */
+		chip->data_active = false;
+		pogo_transport_set_state(pogo_transport, DOCK_HUB, 0);
+		break;
+	case AUDIO_HUB:
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		break;
+	case ACC_DEVICE_HUB:
+	case ACC_AUDIO_HUB:
+		/* Clear data_active since USB-C device is detached */
+		chip->data_active = false;
+		pogo_transport_set_state(pogo_transport, ACC_HUB, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when USB-C port enters Device Mode
+ *  - Triggered from event: EVENT_USBC_DATA_CHANGE
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_usbc_device_on(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	switch (pogo_transport->state) {
+	case STANDBY:
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
+		break;
+	case DOCK_HUB:
+		/*
+		 * Set data_active so that once USB-C cable is detached later, Type-C stack is able
+		 * to call back for the data changed event
+		 */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, DOCK_HUB_HOST_OFFLINE, 0);
+		break;
+	case ACC_DIRECT:
+		/*
+		 * Set data_active so that once USB-C cable is detached later, Type-C stack is able
+		 * to call back for the data changed event
+		 */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, ACC_DIRECT_HOST_OFFLINE, 0);
+		break;
+	case ACC_HUB:
+		switch_to_pogo_locked(pogo_transport);
+		/*
+		 * Set data_active so that once USB-C cable is detached later, Type-C stack is able
+		 * to call back for the data changed event
+		 */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, ACC_DIRECT_HOST_OFFLINE, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when USB-C port leaves Device Mode
+ *  - Triggered from event: EVENT_USBC_DATA_CHANGE
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_usbc_device_off(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	switch (pogo_transport->state) {
+	case HOST_DIRECT:
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		break;
+	case HOST_DIRECT_DOCK_OFFLINE:
+		switch_to_hub_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, DOCK_HUB, 0);
+		break;
+	case DOCK_HUB_HOST_OFFLINE:
+		/*
+		 * Clear data_active so that Type-C stack is able to call back for the data changed
+		 * event
+		 */
+		chip->data_active = false;
+		pogo_transport_set_state(pogo_transport, DOCK_HUB, 0);
+		break;
+	case HOST_DIRECT_ACC_OFFLINE:
+		switch_to_pogo_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, ACC_DIRECT, 0);
+		break;
+	case ACC_DIRECT_HOST_OFFLINE:
+		/*
+		 * Clear data_active so that Type-C stack is able to call back for the data changed
+		 * event
+		 */
+		chip->data_active = false;
+		pogo_transport_set_state(pogo_transport, ACC_DIRECT, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when device attribute "move_data_to_usb" is written to 1
+ *  - Triggered from event: EVENT_ENABLE_USB_DATA
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_enable_usb_data(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	switch (pogo_transport->state) {
+	case DOCK_HUB_HOST_OFFLINE:
+		/*
+		 * Clear data_active so that Type-C stack is able to call back for the data changed
+		 * event later
+		 */
+		chip->data_active = false;
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT_DOCK_OFFLINE, 0);
+		break;
+	case ACC_DIRECT_HOST_OFFLINE:
+		/*
+		 * Clear data_active so that Type-C stack is able to call back for the data changed
+		 * event later
+		 */
+		chip->data_active = false;
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_OFFLINE, 0);
+		break;
+	default:
+		return;
+	}
+}
+
+/*
+ * Call this function to:
+ *  - Disable Accessory Detection IRQ
+ *  - Disable POGO Voltage Detection IRQ
+ *  - Enable POGO Vout by voting 1 to charger_mode_votable
+ *
+ *  This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_skip_acc_detection(struct pogo_transport *pogo_transport)
+{
+	int ret;
+
+	logbuffer_log(pogo_transport->log, "%s: Skip enabling comparator logic, enable vout",
+		      __func__);
+
+	if (pogo_transport->acc_irq_enabled) {
+		disable_irq(pogo_transport->pogo_acc_irq);
+		pogo_transport->acc_irq_enabled = false;
+	}
+
+	if (pogo_transport->pogo_irq_enabled) {
+		disable_irq(pogo_transport->pogo_irq);
+		pogo_transport->pogo_irq_enabled = false;
+	}
+
+	ret = gvotable_cast_long_vote(pogo_transport->charger_mode_votable,
+				      POGO_VOTER, GBMS_POGO_VOUT, 1);
+	if (ret)
+		logbuffer_log(pogo_transport->log, "%s: Failed to vote VOUT, ret %d", __func__,
+			      ret);
+}
+
+/*
+ * Called when device attribute "hall1_s" is written to non-zero
+ *  - If accessory_detection_enabled == ENABLED, it won't involve the State transition.
+ *    Enable the Accessory Detection IRQ and the regulator for the later detection process.
+ *  - If accessory_detection_enabled == HALL_ONLY, transition to related ACC states
+ *  - Triggered from event: EVENT_HES_H1S_CHANGED
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_hes_acc_detected(struct pogo_transport *pogo_transport)
+{
+	int ret;
+
+	/* Disable OVP to prevent the voltage going through POGO_VIN */
+	if (pogo_transport->pogo_ovp_en_gpio >= 0)
+		gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
+					!pogo_transport->pogo_ovp_en_active_state);
+
+	if (pogo_transport->accessory_detection_enabled == ENABLED) {
+		if (!pogo_transport->acc_irq_enabled) {
+			enable_irq(pogo_transport->pogo_acc_irq);
+			pogo_transport->acc_irq_enabled = true;
+		}
+
+		ret = pogo_transport_acc_regulator(pogo_transport, true);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to enable acc_detect %d",
+				      __func__, ret);
+	} else if (pogo_transport->accessory_detection_enabled == HALL_ONLY) {
+		switch (pogo_transport->state) {
+		case STANDBY:
+			pogo_transport_skip_acc_detection(pogo_transport);
+			if (!pogo_transport->mfg_acc_test)
+				switch_to_pogo_locked(pogo_transport);
+			pogo_transport_set_state(pogo_transport, ACC_DIRECT, 0);
+			break;
+		case DEVICE_DIRECT:
+		case AUDIO_DIRECT:
+			pogo_transport_skip_acc_detection(pogo_transport);
+			switch_to_hub_locked(pogo_transport);
+			pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
+			break;
+		case DEVICE_HUB:
+			pogo_transport_skip_acc_detection(pogo_transport);
+			pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
+			break;
+		case AUDIO_HUB:
+			pogo_transport_skip_acc_detection(pogo_transport);
+			pogo_transport_set_state(pogo_transport, ACC_AUDIO_HUB, 0);
+			break;
+		case HOST_DIRECT:
+			pogo_transport_skip_acc_detection(pogo_transport);
+			pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_OFFLINE, 0);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+/*
+ * Called when device attribute "hall1_s" is written to 0
+ * - Triggered from event: EVENT_HES_H1S_CHANGED
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_hes_acc_detached(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	switch (pogo_transport->state) {
+	case STANDBY_ACC_DEBOUNCED:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		break;
+	case DEVICE_DIRECT_ACC_DEBOUNCED:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, DEVICE_DIRECT, 0);
+		break;
+	case DEVICE_HUB_ACC_DEBOUNCED:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, DEVICE_HUB, 0);
+		break;
+	case AUDIO_DIRECT_ACC_DEBOUNCED:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, AUDIO_DIRECT, 0);
+		break;
+	case AUDIO_HUB_ACC_DEBOUNCED:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, AUDIO_HUB, 0);
+		break;
+	case HOST_DIRECT_ACC_DEBOUNCED:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
+		break;
+	case ACC_DIRECT:
+	case ACC_HUB:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		break;
+	case ACC_DEVICE_HUB:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, DEVICE_HUB, 0);
+		break;
+	case ACC_AUDIO_HUB:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, AUDIO_HUB, 0);
+		break;
+	case HOST_DIRECT_ACC_OFFLINE:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
+		break;
+	case ACC_DIRECT_HOST_OFFLINE:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		/* Clear data_active so that Type-C stack is able to enable the USB data later */
+		chip->data_active = false;
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when Accessory Detection IRQ is active
+ *  - Triggered from event: EVENT_ACC_GPIO_ACTIVE
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_acc_debouncing(struct pogo_transport *pogo_transport)
+{
+	switch (pogo_transport->state) {
+	case STANDBY:
+	case STANDBY_ACC_DEBOUNCED:
+		pogo_transport_set_state(pogo_transport, STANDBY_ACC_DEBOUNCED,
+					 pogo_transport->pogo_acc_gpio_debounce_ms);
+		break;
+	case DEVICE_DIRECT:
+	case DEVICE_DIRECT_ACC_DEBOUNCED:
+		pogo_transport_set_state(pogo_transport, DEVICE_DIRECT_ACC_DEBOUNCED,
+					 pogo_transport->pogo_acc_gpio_debounce_ms);
+		break;
+	case DEVICE_HUB:
+	case DEVICE_HUB_ACC_DEBOUNCED:
+		pogo_transport_set_state(pogo_transport, DEVICE_HUB_ACC_DEBOUNCED,
+					 pogo_transport->pogo_acc_gpio_debounce_ms);
+		break;
+	case AUDIO_DIRECT:
+	case AUDIO_DIRECT_ACC_DEBOUNCED:
+		pogo_transport_set_state(pogo_transport, AUDIO_DIRECT_ACC_DEBOUNCED,
+					 pogo_transport->pogo_acc_gpio_debounce_ms);
+		break;
+	case AUDIO_HUB:
+	case AUDIO_HUB_ACC_DEBOUNCED:
+		pogo_transport_set_state(pogo_transport, AUDIO_HUB_ACC_DEBOUNCED,
+					 pogo_transport->pogo_acc_gpio_debounce_ms);
+		break;
+	case HOST_DIRECT:
+	case HOST_DIRECT_ACC_DEBOUNCED:
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_DEBOUNCED,
+					 pogo_transport->pogo_acc_gpio_debounce_ms);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when POGO Voltage Detection IRQ is active while Accessory Detection regulator is enabled.
+ *  - Triggered from event: EVENT_ACC_CONNECTED
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_acc_connected(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+	int ret;
+
+	/*
+	 * FIXME: is it possible that when acc regulator is enabled and pogo irq become active
+	 * because 12V input through pogo pin? e.g. keep magnet closed to the device and then
+	 * docking on korlan?
+	 */
+
+	switch (pogo_transport->state) {
+	case STANDBY_ACC_DEBOUNCED:
+		ret = pogo_transport_acc_regulator(pogo_transport, false);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect %d",
+				      __func__, ret);
+
+		if (!pogo_transport->mfg_acc_test)
+			switch_to_pogo_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, ACC_DIRECT, 0);
+		break;
+	case DEVICE_DIRECT_ACC_DEBOUNCED:
+	case AUDIO_DIRECT_ACC_DEBOUNCED:
+		ret = pogo_transport_acc_regulator(pogo_transport, false);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect %d",
+				      __func__, ret);
+
+		switch_to_hub_locked(pogo_transport);
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
+		break;
+	case DEVICE_HUB_ACC_DEBOUNCED:
+		ret = pogo_transport_acc_regulator(pogo_transport, false);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect %d",
+				      __func__, ret);
+
+		pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
+		break;
+	case AUDIO_HUB_ACC_DEBOUNCED:
+		ret = pogo_transport_acc_regulator(pogo_transport, false);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect %d",
+				      __func__, ret);
+
+		pogo_transport_set_state(pogo_transport, ACC_AUDIO_HUB, 0);
+		break;
+	case HOST_DIRECT_ACC_DEBOUNCED:
+		ret = pogo_transport_acc_regulator(pogo_transport, false);
+		if (ret)
+			logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect %d",
+				      __func__, ret);
+
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_OFFLINE, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when a USB device with AUDIO Class is enumerated.
+ *  - Triggered from event: EVENT_AUDIO_DEV_ATTACHED
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_audio_dev_attached(struct pogo_transport *pogo_transport)
+{
+	switch (pogo_transport->state) {
+	case DOCK_DEVICE_HUB:
+		pogo_transport_set_state(pogo_transport, DOCK_AUDIO_HUB, 0);
+		break;
+	case DEVICE_DIRECT:
+		pogo_transport_set_state(pogo_transport, AUDIO_DIRECT, 0);
+		break;
+	case ACC_DEVICE_HUB:
+		pogo_transport_set_state(pogo_transport, ACC_AUDIO_HUB, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Called when the detected orientation on USB-C port is changed.
+ *  - Triggered from event: EVENT_USBC_ORIENTATION
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_usbc_orientation_changed(struct pogo_transport *pogo_transport)
+{
+	/*
+	 * TODO: It is possible that USB-C is toggling between CC2 and Open. We may need to wait for
+	 * the orientation being settled and then update the ssphy.
+	 */
+	switch (pogo_transport->state) {
+	/* usbc being connected while hub is enabled */
+	case DOCK_HUB:
+	case ACC_HUB:
+	/* usbc being disconnected while hub is enabled */
+	case DOCK_DEVICE_HUB:
+	case DOCK_AUDIO_HUB:
+	case DOCK_HUB_HOST_OFFLINE:
+	case ACC_DEVICE_HUB:
+	case ACC_AUDIO_HUB:
+		pogo_transport_update_polarity(pogo_transport, (int)pogo_transport->polarity, true);
+		ssphy_restart_control(pogo_transport, true);
+		break;
+	default:
+		break;
+	}
+}
+
+static void pogo_transport_event_handler(struct kthread_work *work)
+{
+	struct pogo_transport *pogo_transport = container_of(work, struct pogo_transport,
+							     event_work);
+	struct max77759_plat *chip = pogo_transport->chip;
+	unsigned long events;
+
+	mutex_lock(&chip->data_path_lock);
+	spin_lock(&pogo_transport->pogo_event_lock);
+	while (pogo_transport->event_map) {
+		events = pogo_transport->event_map;
+		pogo_transport->event_map = 0;
+
+		spin_unlock(&pogo_transport->pogo_event_lock);
+
+		if (events & EVENT_POGO_IRQ) {
+			int pogo_gpio = gpio_get_value(pogo_transport->pogo_gpio);
+
+			logbuffer_log(pogo_transport->log, "EV:POGO_IRQ %s", pogo_gpio ?
+				      "STANDBY" : "ACTIVE");
+			if (pogo_gpio)
+				pogo_transport_pogo_irq_standby(pogo_transport);
+			else
+				pogo_transport_pogo_irq_active(pogo_transport);
+		}
+		if (events & EVENT_USBC_ORIENTATION) {
+			logbuffer_log(pogo_transport->log, "EV:ORIENTATION %u",
+				      pogo_transport->polarity);
+			pogo_transport_usbc_orientation_changed(pogo_transport);
+		}
+		if (events & EVENT_USBC_DATA_CHANGE) {
+			logbuffer_log(pogo_transport->log, "EV:DATA_CHANGE usbc-role %u usbc-active %u",
+				      pogo_transport->usbc_data_role,
+				      pogo_transport->usbc_data_active);
+			if (pogo_transport->usbc_data_role == TYPEC_HOST) {
+				if (pogo_transport->usbc_data_active)
+					pogo_transport_usbc_host_on(pogo_transport);
+				else
+					pogo_transport_usbc_host_off(pogo_transport);
+			} else {
+				if (pogo_transport->usbc_data_active)
+					pogo_transport_usbc_device_on(pogo_transport);
+				else
+					pogo_transport_usbc_device_off(pogo_transport);
+			}
+		}
+		if (events & EVENT_ENABLE_USB_DATA) {
+			logbuffer_log(pogo_transport->log, "EV:ENABLE_USB");
+			pogo_transport_enable_usb_data(pogo_transport);
+		}
+		if (events & EVENT_HES_H1S_CHANGED) {
+			logbuffer_log(pogo_transport->log, "EV:H1S state %d",
+				      pogo_transport->hall1_s_state);
+			if (pogo_transport->hall1_s_state)
+				pogo_transport_hes_acc_detected(pogo_transport);
+			else
+				pogo_transport_hes_acc_detached(pogo_transport);
+		}
+		if (events & EVENT_ACC_GPIO_ACTIVE) {
+			logbuffer_log(pogo_transport->log, "EV:ACC_GPIO_ACTIVE");
+			pogo_transport_acc_debouncing(pogo_transport);
+		}
+		if (events & EVENT_ACC_CONNECTED) {
+			logbuffer_log(pogo_transport->log, "EV:ACC_CONNECTED");
+			pogo_transport_acc_connected(pogo_transport);
+		}
+		if (events & EVENT_AUDIO_DEV_ATTACHED) {
+			logbuffer_log(pogo_transport->log, "EV:AUDIO_ATTACHED");
+			pogo_transport_audio_dev_attached(pogo_transport);
+		}
+
+		spin_lock(&pogo_transport->pogo_event_lock);
+	}
+	spin_unlock(&pogo_transport->pogo_event_lock);
+	mutex_unlock(&chip->data_path_lock);
+}
+
+static void pogo_transport_queue_event(struct pogo_transport *pogo_transport, unsigned long event)
+{
+	unsigned long flags;
+
+	pm_wakeup_event(pogo_transport->dev, POGO_TIMEOUT_MS);
+	/*
+	 * Print the event number derived from the bit position; e.g. BIT(0) -> 0
+	 * Note that ffs() only return the least significant set bit.
+	 */
+	logbuffer_log(pogo_transport->log, "QUEUE EVENT %d", ffs((int)event) - 1);
+
+	spin_lock_irqsave(&pogo_transport->pogo_event_lock, flags);
+	pogo_transport->event_map |= event;
+	spin_unlock_irqrestore(&pogo_transport->pogo_event_lock, flags);
+
+	kthread_queue_work(pogo_transport->wq, &pogo_transport->event_work);
+}
+
+/*-------------------------------------------------------------------------*/
+/* Events triggering                                                       */
+/*-------------------------------------------------------------------------*/
+
 static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
 {
 	struct pogo_transport *pogo_transport = dev_id;
@@ -759,6 +1867,12 @@ static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
 
 	logbuffer_log(pogo_transport->log, "Pogo acc threaded irq running, acc_detect %u",
 		      pogo_acc_gpio);
+
+	if (pogo_transport->state_machine_enabled) {
+		if (pogo_acc_gpio)
+			pogo_transport_queue_event(pogo_transport, EVENT_ACC_GPIO_ACTIVE);
+		return IRQ_HANDLED;
+	}
 
 	if (pogo_acc_gpio)
 		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DEBOUNCED,
@@ -792,7 +1906,10 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 			/* disable the irq to prevent the interrupt storm after pogo 5v out */
 			disable_irq_nosync(pogo_transport->pogo_irq);
 			pogo_transport->pogo_irq_enabled = false;
-			pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
+			if (pogo_transport->state_machine_enabled)
+				pogo_transport_queue_event(pogo_transport, EVENT_ACC_CONNECTED);
+			else
+				pogo_transport_event(pogo_transport, EVENT_POGO_ACC_CONNECTED, 0);
 		}
 		return IRQ_HANDLED;
 	}
@@ -812,32 +1929,12 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 				      __func__, ret);
 	}
 
-	/*
-	 * Signal pogo status change event.
-	 * Debounce on docking to differentiate between different docks by
-	 * reading power supply voltage.
-	 */
-	pogo_transport_event(pogo_transport, EVENT_DOCKING, !pogo_gpio ? POGO_PSY_DEBOUNCE_MS : 0);
+	if (pogo_transport->state_machine_enabled)
+		pogo_transport_queue_event(pogo_transport, EVENT_POGO_IRQ);
+	else
+		pogo_transport_event(pogo_transport, EVENT_DOCKING, !pogo_gpio ?
+				     POGO_PSY_DEBOUNCE_MS : 0);
 	return IRQ_HANDLED;
-}
-
-static void data_active_changed(void *data)
-{
-	struct pogo_transport *pogo_transport = data;
-
-	logbuffer_log(pogo_transport->log, "data active changed");
-	pogo_transport_event(pogo_transport, EVENT_DATA_ACTIVE_CHANGED, 0);
-}
-
-static void orientation_changed(void *data)
-{
-	struct pogo_transport *pogo_transport = data;
-	struct max77759_plat *chip = pogo_transport->chip;
-
-	if (pogo_transport->polarity != chip->polarity) {
-		pogo_transport->polarity = chip->polarity;
-		pogo_transport_event(pogo_transport, EVENT_ORIENTATION_CHANGED, 0);
-	}
 }
 
 static irqreturn_t pogo_isr(int irq, void *dev_id)
@@ -850,12 +1947,47 @@ static irqreturn_t pogo_isr(int irq, void *dev_id)
 	return IRQ_WAKE_THREAD;
 }
 
+static void data_active_changed(void *data, enum typec_data_role role, bool active)
+{
+	struct pogo_transport *pogo_transport = data;
+
+	logbuffer_log(pogo_transport->log, "%s: role %u active %d", __func__, role, active);
+
+	pogo_transport->usbc_data_role = role;
+	pogo_transport->usbc_data_active = active;
+
+	if (pogo_transport->state_machine_enabled)
+		pogo_transport_queue_event(pogo_transport, EVENT_USBC_DATA_CHANGE);
+	else
+		pogo_transport_event(pogo_transport, EVENT_DATA_ACTIVE_CHANGED, 0);
+}
+
+static void orientation_changed(void *data)
+{
+	struct pogo_transport *pogo_transport = data;
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	if (pogo_transport->polarity != chip->polarity) {
+		pogo_transport->polarity = chip->polarity;
+		if (pogo_transport->state_machine_enabled)
+			pogo_transport_queue_event(pogo_transport, EVENT_USBC_ORIENTATION);
+		else
+			pogo_transport_event(pogo_transport, EVENT_ORIENTATION_CHANGED, 0);
+	}
+}
+
+/* Called when a USB hub/device (exclude root hub) is enumerated */
 static void pogo_transport_udev_add(struct pogo_transport *pogo_transport, struct usb_device *udev)
 {
 	struct usb_interface_descriptor *desc;
 	struct usb_host_config *config;
 	bool audio_dev = false;
 	int i;
+
+	/* Don't proceed to the event handling if the udev is an Audio Dock. Skip here. */
+	if (pogo_transport_match_udev(audio_dock_ids, le16_to_cpu(udev->descriptor.idVendor),
+				      le16_to_cpu(udev->descriptor.idProduct)))
+		return;
 
 	config = udev->config;
 	for (i = 0; i < config->desc.bNumInterfaces; i++) {
@@ -870,6 +2002,9 @@ static void pogo_transport_udev_add(struct pogo_transport *pogo_transport, struc
 		      le16_to_cpu(udev->descriptor.idVendor),
 		      le16_to_cpu(udev->descriptor.idProduct),
 		      audio_dev ? "(audio)" : "");
+
+	if (audio_dev && pogo_transport->state_machine_enabled)
+		pogo_transport_queue_event(pogo_transport, EVENT_AUDIO_DEV_ATTACHED);
 }
 
 /* notifier callback from usb core */
@@ -905,6 +2040,11 @@ static int mock_hid_connected_set(void *data, u64 val)
 {
 	struct pogo_transport *pogo_transport = data;
 
+	if (pogo_transport->state_machine_enabled) {
+		logbuffer_log(pogo_transport->log, "state machine enabled; ignore mock hid");
+		return 0;
+	}
+
 	pogo_transport->mock_hid_connected = !!val;
 
 	logbuffer_log(pogo_transport->log, "%s: %u", __func__, pogo_transport->mock_hid_connected);
@@ -928,6 +2068,10 @@ static int mock_hid_connected_get(void *data, u64 *val)
 
 DEFINE_SIMPLE_ATTRIBUTE(mock_hid_connected_fops, mock_hid_connected_get, mock_hid_connected_set,
 			"%llu\n");
+
+/*-------------------------------------------------------------------------*/
+/* Initialization                                                          */
+/*-------------------------------------------------------------------------*/
 
 static void pogo_transport_init_debugfs(struct pogo_transport *pogo_transport)
 {
@@ -1269,6 +2413,8 @@ static int pogo_transport_probe(struct platform_device *pdev)
 	}
 	platform_set_drvdata(pdev, pogo_transport);
 
+	spin_lock_init(&pogo_transport->pogo_event_lock);
+
 	pogo_transport->wq = kthread_create_worker(0, "wq-pogo-transport");
 	if (IS_ERR_OR_NULL(pogo_transport->wq)) {
 		ret = PTR_ERR(pogo_transport->wq);
@@ -1277,6 +2423,9 @@ static int pogo_transport_probe(struct platform_device *pdev)
 
 	kthread_init_delayed_work(&pogo_transport->pogo_accessory_debounce_work,
 				  process_debounce_event);
+	kthread_init_delayed_work(&pogo_transport->state_machine,
+				  pogo_transport_state_machine_work);
+	kthread_init_work(&pogo_transport->event_work, pogo_transport_event_handler);
 
 	dn = dev_of_node(pogo_transport->dev);
 	if (!dn) {
@@ -1347,6 +2496,28 @@ static int pogo_transport_probe(struct platform_device *pdev)
 			goto psy_put;
 	}
 
+	/*
+	 * modparam_state_machine_enable
+	 * 0 or unset: If property "legacy-event-driven" is found in device tree, disable the state
+	 *	       machine. Otherwise, enable/disable the state machine based on
+	 *	       DEFAULT_STATE_MACHINE_ENABLE.
+	 * 1: Enable the state machine
+	 * 2: Disable the state machine
+	 */
+	if (modparam_state_machine_enable == 1) {
+		pogo_transport->state_machine_enabled = true;
+	} else if (modparam_state_machine_enable == 2) {
+		pogo_transport->state_machine_enabled = false;
+	} else {
+		if (of_property_read_bool(pogo_transport->dev->of_node, "legacy-event-driven"))
+			pogo_transport->state_machine_enabled = false;
+		else
+			pogo_transport->state_machine_enabled = DEFAULT_STATE_MACHINE_ENABLE;
+	}
+
+	if (pogo_transport->state_machine_enabled)
+		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+
 	if (modparam_pogo_accessory_enable) {
 		ret = init_acc_gpio(pogo_transport);
 		if (ret)
@@ -1383,6 +2554,7 @@ static int pogo_transport_probe(struct platform_device *pdev)
 	/* run once in case orientation has changed before registering the callback */
 	orientation_changed((void *)pogo_transport);
 	dev_info(&pdev->dev, "force usb:%d\n", modparam_force_usb ? 1 : 0);
+	dev_info(&pdev->dev, "state machine:%u\n", pogo_transport->state_machine_enabled);
 	put_device(&data_client->dev);
 	of_node_put(data_np);
 	return 0;
@@ -1404,6 +2576,7 @@ static int pogo_transport_remove(struct platform_device *pdev)
 {
 	struct pogo_transport *pogo_transport = platform_get_drvdata(pdev);
 	struct dentry *dentry;
+	int ret;
 
 	usb_unregister_notify(&pogo_transport->udev_nb);
 
@@ -1419,6 +2592,10 @@ static int pogo_transport_remove(struct platform_device *pdev)
 
 	if (pogo_transport->hub_ldo && regulator_is_enabled(pogo_transport->hub_ldo) > 0)
 		regulator_disable(pogo_transport->hub_ldo);
+
+	ret = pogo_transport_acc_regulator(pogo_transport, false);
+	if (ret)
+		dev_err(pogo_transport->dev, "%s: Failed to disable acc ldo %d\n", __func__, ret);
 
 	if (pogo_transport->acc_detect_ldo &&
 	    regulator_is_enabled(pogo_transport->acc_detect_ldo) > 0)
@@ -1436,6 +2613,10 @@ static int pogo_transport_remove(struct platform_device *pdev)
 
 	return 0;
 }
+
+/*-------------------------------------------------------------------------*/
+/* Event triggering part.2                                                 */
+/*-------------------------------------------------------------------------*/
 
 #define POGO_TRANSPORT_RO_ATTR(_name)                                                           \
 static ssize_t _name##_show(struct device *dev, struct device_attribute *attr, char *buf)       \
@@ -1459,7 +2640,10 @@ static ssize_t move_data_to_usb_store(struct device *dev, struct device_attribut
 	if (enable != 1)
 		return -EINVAL;
 
-	pogo_transport_event(pogo_transport, EVENT_MOVE_DATA_TO_USB, 0);
+	if (pogo_transport->state_machine_enabled)
+		pogo_transport_queue_event(pogo_transport, EVENT_ENABLE_USB_DATA);
+	else
+		pogo_transport_event(pogo_transport, EVENT_MOVE_DATA_TO_USB, 0);
 
 	return size;
 }
@@ -1473,6 +2657,12 @@ static ssize_t force_pogo_store(struct device *dev, struct device_attribute *att
 
 	if (kstrtobool(buf, &force_pogo))
 		return -EINVAL;
+
+	/* TODO: implement force_pogo feature when state machine is enabled */
+	if (pogo_transport->state_machine_enabled) {
+		logbuffer_log(pogo_transport->log, "state machine enabled; ignore force_pogo");
+		return size;
+	}
 
 	pogo_transport->force_pogo = force_pogo;
 	if (force_pogo)
@@ -1493,6 +2683,11 @@ static ssize_t enable_hub_store(struct device *dev, struct device_attribute *att
 {
 	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
 	u8 enable_hub;
+
+	if (pogo_transport->state_machine_enabled) {
+		logbuffer_log(pogo_transport->log, "state machine enabled; ignore enable_hub");
+		return size;
+	}
 
 	if (!pogo_transport->hub_embedded)
 		return size;
@@ -1539,7 +2734,8 @@ static ssize_t hall1_s_store(struct device *dev, struct device_attribute *attr, 
 		return size;
 
 	if (!pogo_transport->accessory_detection_enabled) {
-		dev_info(pogo_transport->dev, "Accessory detection disabled\n");
+		logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO, "%s:Accessory detection disabled",
+			       __func__);
 		return size;
 	}
 
@@ -1560,8 +2756,14 @@ static ssize_t hall1_s_store(struct device *dev, struct device_attribute *attr, 
 	else
 		pogo_transport->mfg_acc_test = false;
 
-	dev_info(pogo_transport->dev, "accessory detection %u, mfg %u\n", enable_acc_detect,
-		 pogo_transport->mfg_acc_test);
+	logbuffer_log(pogo_transport->log, "H1S: accessory detection %u, mfg %u", enable_acc_detect,
+		      pogo_transport->mfg_acc_test);
+
+	if (pogo_transport->state_machine_enabled) {
+		pogo_transport_queue_event(pogo_transport, EVENT_HES_H1S_CHANGED);
+		return size;
+	}
+
 	if (enable_acc_detect)
 		pogo_transport_event(pogo_transport, EVENT_HALL_SENSOR_ACC_DETECTED, 0);
 	else
@@ -1574,7 +2776,15 @@ static DEVICE_ATTR_WO(hall1_s);
 static ssize_t hall1_n_store(struct device *dev, struct device_attribute *attr, const char *buf,
 			     size_t size)
 {
+	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
+	u8 data;
+
 	/* Reserved for HES1 Malfunction detection */
+
+	if (kstrtou8(buf, 0, &data))
+		return -EINVAL;
+
+	logbuffer_log(pogo_transport->log, "H1N: %u", data);
 	return size;
 }
 static DEVICE_ATTR_WO(hall1_n);
@@ -1582,7 +2792,15 @@ static DEVICE_ATTR_WO(hall1_n);
 static ssize_t hall2_s_store(struct device *dev, struct device_attribute *attr, const char *buf,
 			     size_t size)
 {
+	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
+	u8 data;
+
 	/* Reserved for keyboard status detection */
+
+	if (kstrtou8(buf, 0, &data))
+		return -EINVAL;
+
+	logbuffer_log(pogo_transport->log, "H2S: %u", data);
 	return size;
 }
 static DEVICE_ATTR_WO(hall2_s);
