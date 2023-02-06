@@ -14,5 +14,6 @@
 				       PDO_FIXED_HIGHER_CAP |
 				       PDO_FIXED_DUAL_ROLE)
 			     PDO_FIXED(9000, 2200, 0)>;
+		/delete-property/ new-source-frs-typec-current;
 	};
 };

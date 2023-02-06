@@ -42,4 +42,9 @@
 
 &udc {
 	extcon = <&max77759tcpc &google_pogo>;
+	force_gen1;
+};
+
+&usbdrd_dwc3 {
+	maximum-speed = "super-speed";
 };

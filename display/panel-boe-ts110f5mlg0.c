@@ -137,6 +137,24 @@ static const struct exynos_dsi_cmd ts110f5mlg0_init_cmds[] = {
 	EXYNOS_DSI_CMD_SEQ(0x53, 0x24),
 	/* CABC initial OFF */
 	EXYNOS_DSI_CMD_SEQ(0x55, 0x00),
+	/* CMD2, Page2 */
+	EXYNOS_DSI_CMD_SEQ(0xFF, 0x22),
+	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),
+	/* Set IE parameter */
+	EXYNOS_DSI_CMD_SEQ(0x1A, 0x00),
+	EXYNOS_DSI_CMD_SEQ(0x68, 0x00),
+	EXYNOS_DSI_CMD_SEQ(0xA2, 0x20),
+	EXYNOS_DSI_CMD_SEQ(0x56, 0x77),
+	/* Set IE dark fine tune parameter */
+	EXYNOS_DSI_CMD_SEQ(0x58, 0x10),
+	/* Set IE bright fine tune parameter */
+	EXYNOS_DSI_CMD_SEQ(0x59, 0x1F),
+	/* Set IE dimming mode */
+	EXYNOS_DSI_CMD_SEQ(0x6A, 0x21),
+
+	/* CMD1 */
+	EXYNOS_DSI_CMD_SEQ(0xFF, 0x10),
+	EXYNOS_DSI_CMD_SEQ(0xFB, 0x01),
 	/* BBh (MIPI via/bypass RAM) */
 	EXYNOS_DSI_CMD_SEQ(0xBB, 0x13),
 	/* VBP + VFP = 200 + 26 = 226 */
@@ -245,7 +263,8 @@ static void ts110f5mlg0_set_cabc_mode(struct exynos_panel *ctx,
 		mode = 0x02;
 		break;
 	case CABC_MOVIE_MODE:
-		mode = 0x03;
+		/* CABC MOVING MODE & IE */
+		mode = 0x83;
 		break;
 	default:
 		mode = 0x00;
