@@ -178,6 +178,7 @@ struct pogo_transport {
 static const unsigned int pogo_extcon_cable[] = {
 	EXTCON_USB,
 	EXTCON_DOCK,
+	EXTCON_NONE,
 };
 
 static void pogo_transport_event(struct pogo_transport *pogo_transport,
