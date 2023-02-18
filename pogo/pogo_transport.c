@@ -20,6 +20,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regulator/consumer.h>
+#include <linux/usb.h>
 #include <linux/usb/tcpm.h>
 #include <misc/gvotable.h>
 
@@ -154,6 +155,9 @@ struct pogo_transport {
 	 */
 	bool mock_hid_connected;
 	struct kthread_worker *wq;
+
+	struct notifier_block udev_nb;
+
 	/* To read voltage at the pogo pins */
 	struct power_supply *pogo_psy;
 	/* Retry when voltage is less than POGO_USB_CAPABLE_THRESHOLD_UV */
@@ -846,6 +850,56 @@ static irqreturn_t pogo_isr(int irq, void *dev_id)
 	return IRQ_WAKE_THREAD;
 }
 
+static void pogo_transport_udev_add(struct pogo_transport *pogo_transport, struct usb_device *udev)
+{
+	struct usb_interface_descriptor *desc;
+	struct usb_host_config *config;
+	bool audio_dev = false;
+	int i;
+
+	config = udev->config;
+	for (i = 0; i < config->desc.bNumInterfaces; i++) {
+		desc = &config->intf_cache[i]->altsetting->desc;
+		if (desc->bInterfaceClass == USB_CLASS_AUDIO) {
+			audio_dev = true;
+			break;
+		}
+	}
+
+	logbuffer_log(pogo_transport->log, "udev added %04X:%04X %s",
+		      le16_to_cpu(udev->descriptor.idVendor),
+		      le16_to_cpu(udev->descriptor.idProduct),
+		      audio_dev ? "(audio)" : "");
+}
+
+/* notifier callback from usb core */
+static int pogo_transport_udev_notify(struct notifier_block *nb, unsigned long action, void *dev)
+{
+	struct pogo_transport *pogo_transport = container_of(nb, struct pogo_transport, udev_nb);
+	struct usb_device *udev = dev;
+
+	switch (action) {
+	case USB_DEVICE_ADD:
+		/* Don't care about the root hubs. */
+		if (udev->bus->root_hub == udev)
+			break;
+
+		pogo_transport_udev_add(pogo_transport, udev);
+		break;
+	case USB_DEVICE_REMOVE:
+		/* Don't care about the root hubs. */
+		if (udev->bus->root_hub == udev)
+			break;
+
+		logbuffer_log(pogo_transport->log, "udev removed %04X:%04X",
+			      le16_to_cpu(udev->descriptor.idVendor),
+			      le16_to_cpu(udev->descriptor.idProduct));
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 static int mock_hid_connected_set(void *data, u64 val)
 {
@@ -1324,6 +1378,8 @@ static int pogo_transport_probe(struct platform_device *pdev)
 
 	register_data_active_callback(data_active_changed, pogo_transport);
 	register_orientation_callback(orientation_changed, pogo_transport);
+	pogo_transport->udev_nb.notifier_call = pogo_transport_udev_notify;
+	usb_register_notify(&pogo_transport->udev_nb);
 	/* run once in case orientation has changed before registering the callback */
 	orientation_changed((void *)pogo_transport);
 	dev_info(&pdev->dev, "force usb:%d\n", modparam_force_usb ? 1 : 0);
@@ -1348,6 +1404,8 @@ static int pogo_transport_remove(struct platform_device *pdev)
 {
 	struct pogo_transport *pogo_transport = platform_get_drvdata(pdev);
 	struct dentry *dentry;
+
+	usb_unregister_notify(&pogo_transport->udev_nb);
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	dentry = debugfs_lookup("pogo_transport", NULL);
