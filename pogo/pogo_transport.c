@@ -273,6 +273,8 @@ struct pogo_transport {
 
 	/* Register the notifier from USB core */
 	struct notifier_block udev_nb;
+	/* When true, a superspeed (or better) USB device is enumerated */
+	bool ss_udev_attached;
 
 	/* To read voltage at the pogo pins */
 	struct power_supply *pogo_psy;
@@ -1279,6 +1281,9 @@ static void pogo_transport_usbc_host_on(struct pogo_transport *pogo_transport)
 static void pogo_transport_usbc_host_off(struct pogo_transport *pogo_transport)
 {
 	struct max77759_plat *chip = pogo_transport->chip;
+	bool ss_attached = pogo_transport->ss_udev_attached;
+
+	pogo_transport->ss_udev_attached = false;
 
 	switch (pogo_transport->state) {
 	case DOCK_DEVICE_HUB:
@@ -1309,6 +1314,19 @@ static void pogo_transport_usbc_host_off(struct pogo_transport *pogo_transport)
 		break;
 	case ACC_DEVICE_HUB:
 	case ACC_AUDIO_HUB:
+		/* b/271669059 */
+		if (ss_attached) {
+			/* USB_MUX_HUB_SEL set to 0 to bypass the hub */
+			gpio_set_value(pogo_transport->pogo_hub_sel_gpio, 0);
+			logbuffer_log(pogo_transport->log, "POGO: toggling hub-mux, hub-mux:%d",
+				      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
+			mdelay(10);
+			/* USB_MUX_HUB_SEL set to 1 to switch the path to hub */
+			gpio_set_value(pogo_transport->pogo_hub_sel_gpio, 1);
+			logbuffer_log(pogo_transport->log, "POGO: hub-mux:%d",
+				      gpio_get_value(pogo_transport->pogo_hub_sel_gpio));
+		}
+
 		/* Clear data_active since USB-C device is detached */
 		chip->data_active = false;
 		pogo_transport_set_state(pogo_transport, ACC_HUB, 0);
@@ -1981,13 +1999,19 @@ static void pogo_transport_udev_add(struct pogo_transport *pogo_transport, struc
 {
 	struct usb_interface_descriptor *desc;
 	struct usb_host_config *config;
+	bool audio_dock = false;
 	bool audio_dev = false;
 	int i;
 
-	/* Don't proceed to the event handling if the udev is an Audio Dock. Skip here. */
+	/* Don't proceed to the event handling if the udev is an Audio Dock. Skip the check. */
 	if (pogo_transport_match_udev(audio_dock_ids, le16_to_cpu(udev->descriptor.idVendor),
-				      le16_to_cpu(udev->descriptor.idProduct)))
-		return;
+				      le16_to_cpu(udev->descriptor.idProduct))) {
+		audio_dock = true;
+		goto skip_audio_check;
+	}
+
+	if (udev->speed >= USB_SPEED_SUPER)
+		pogo_transport->ss_udev_attached = true;
 
 	config = udev->config;
 	for (i = 0; i < config->desc.bNumInterfaces; i++) {
@@ -1998,10 +2022,14 @@ static void pogo_transport_udev_add(struct pogo_transport *pogo_transport, struc
 		}
 	}
 
-	logbuffer_log(pogo_transport->log, "udev added %04X:%04X %s",
+skip_audio_check:
+	logbuffer_log(pogo_transport->log, "udev added %04X:%04X [%s%s%s%s]",
 		      le16_to_cpu(udev->descriptor.idVendor),
 		      le16_to_cpu(udev->descriptor.idProduct),
-		      audio_dev ? "(audio)" : "");
+		      udev->speed >= USB_SPEED_SUPER ? "Ss" : "",
+		      udev->descriptor.bDeviceClass == USB_CLASS_HUB ? "Hu" : "",
+		      audio_dock ? "Do" : "",
+		      audio_dev ? "Au" : "");
 
 	if (audio_dev && pogo_transport->state_machine_enabled)
 		pogo_transport_queue_event(pogo_transport, EVENT_AUDIO_DEV_ATTACHED);
