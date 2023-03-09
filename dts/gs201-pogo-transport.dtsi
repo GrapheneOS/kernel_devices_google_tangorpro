@@ -38,6 +38,7 @@
 				pogo-hub-reset = <&gpp0 0 GPIO_ACTIVE_HIGH>;
 				pogo-hub-sel = <&gpp2 0 GPIO_ACTIVE_HIGH>;
 
+				pogo-acc-capable;
 				pogo-acc-detect = <&gpa8 2 GPIO_ACTIVE_HIGH>;
 
 				usb-hub-supply = <&s_ldo28_reg>;
