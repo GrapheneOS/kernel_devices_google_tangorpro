@@ -1072,7 +1072,15 @@ static void pogo_transport_run_state_machine(struct pogo_transport *pogo_transpo
 	case HOST_DIRECT_DOCKING_DEBOUNCED:
 		if (docked) {
 			update_extcon_dev(pogo_transport, true, true);
-			pogo_transport_set_state(pogo_transport, HOST_DIRECT_DOCK_OFFLINE, 0);
+			if (pogo_transport->force_pogo) {
+				switch_to_hub_locked(pogo_transport);
+				/* switch_to_hub_locked cleared data_active, set it here */
+				chip->data_active = true;
+				pogo_transport_set_state(pogo_transport, DOCK_HUB_HOST_OFFLINE, 0);
+			} else {
+				pogo_transport_set_state(pogo_transport, HOST_DIRECT_DOCK_OFFLINE,
+							 0);
+			}
 		} else {
 			pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
 		}
@@ -1201,6 +1209,8 @@ static void pogo_transport_pogo_irq_active(struct pogo_transport *pogo_transport
  */
 static void pogo_transport_pogo_irq_standby(struct pogo_transport *pogo_transport)
 {
+	struct max77759_plat *chip = pogo_transport->chip;
+
 	switch (pogo_transport->state) {
 	case STANDBY:
 		update_extcon_dev(pogo_transport, false, false);
@@ -1229,6 +1239,8 @@ static void pogo_transport_pogo_irq_standby(struct pogo_transport *pogo_transpor
 		break;
 	case DOCK_HUB_HOST_OFFLINE:
 		update_extcon_dev(pogo_transport, false, false);
+		/* Clear data_active so that Type-C stack is able to enable the USB data later */
+		chip->data_active = false;
 		switch_to_usbc_locked(pogo_transport);
 		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
 		break;
@@ -1500,6 +1512,7 @@ static void pogo_transport_skip_acc_detection(struct pogo_transport *pogo_transp
  */
 static void pogo_transport_hes_acc_detected(struct pogo_transport *pogo_transport)
 {
+	struct max77759_plat *chip = pogo_transport->chip;
 	int ret;
 
 	/* Disable OVP to prevent the voltage going through POGO_VIN */
@@ -1541,7 +1554,19 @@ static void pogo_transport_hes_acc_detected(struct pogo_transport *pogo_transpor
 			break;
 		case HOST_DIRECT:
 			pogo_transport_skip_acc_detection(pogo_transport);
-			pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_OFFLINE, 0);
+			if (pogo_transport->force_pogo) {
+				switch_to_pogo_locked(pogo_transport);
+				/*
+				 * Set data_active so that once USB-C cable is detached later,
+				 * Type-C stack is able to call back for the data changed event
+				 */
+				chip->data_active = true;
+				pogo_transport_set_state(pogo_transport, ACC_DIRECT_HOST_OFFLINE,
+							 0);
+			} else {
+				pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_OFFLINE,
+							 0);
+			}
 			break;
 		default:
 			break;
@@ -1719,7 +1744,17 @@ static void pogo_transport_acc_connected(struct pogo_transport *pogo_transport)
 			logbuffer_log(pogo_transport->log, "%s: Failed to disable acc_detect %d",
 				      __func__, ret);
 
-		pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_OFFLINE, 0);
+		if (pogo_transport->force_pogo) {
+			switch_to_pogo_locked(pogo_transport);
+			/*
+			 * Set data_active so that once USB-C cable is detached later, Type-C stack
+			 * is able to call back for the data changed event
+			 */
+			chip->data_active = true;
+			pogo_transport_set_state(pogo_transport, ACC_DIRECT_HOST_OFFLINE, 0);
+		} else {
+			pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_OFFLINE, 0);
+		}
 		break;
 	default:
 		break;
@@ -2686,14 +2721,8 @@ static ssize_t force_pogo_store(struct device *dev, struct device_attribute *att
 	if (kstrtobool(buf, &force_pogo))
 		return -EINVAL;
 
-	/* TODO: implement force_pogo feature when state machine is enabled */
-	if (pogo_transport->state_machine_enabled) {
-		logbuffer_log(pogo_transport->log, "state machine enabled; ignore force_pogo");
-		return size;
-	}
-
 	pogo_transport->force_pogo = force_pogo;
-	if (force_pogo)
+	if (force_pogo && !pogo_transport->state_machine_enabled)
 		pogo_transport_event(pogo_transport, EVENT_MOVE_DATA_TO_POGO, 0);
 
 	return size;
