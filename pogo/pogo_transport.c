@@ -75,6 +75,7 @@
  *  (M)	ACC_DIRECT,			// Acc online, hub disabled
  *  (N)	ACC_DEVICE_HUB,			// Acc online, usb device online, hub enabled
  *  (O)	ACC_HUB,			// Acc online, hub enabled
+ *  (T)	ACC_HUB_HOST_OFFLINE,		// Acc online, hub enabled, usb host offline
  *  (P)	ACC_AUDIO_HUB,			// Acc online, usb audio online, hub enabled
  *  (Q)	LID_CLOSE,
  *  (R)	HOST_DIRECT_ACC_OFFLINE,	// Usb host online, acc offline, hub disabled
@@ -110,6 +111,7 @@
 	S(ACC_DIRECT),				\
 	S(ACC_DEVICE_HUB),			\
 	S(ACC_HUB),				\
+	S(ACC_HUB_HOST_OFFLINE),		\
 	S(ACC_AUDIO_HUB),			\
 	S(LID_CLOSE),				\
 	S(HOST_DIRECT_ACC_OFFLINE),		\
@@ -1379,13 +1381,12 @@ static void pogo_transport_usbc_device_on(struct pogo_transport *pogo_transport)
 		pogo_transport_set_state(pogo_transport, ACC_DIRECT_HOST_OFFLINE, 0);
 		break;
 	case ACC_HUB:
-		switch_to_pogo_locked(pogo_transport);
 		/*
 		 * Set data_active so that once USB-C cable is detached later, Type-C stack is able
 		 * to call back for the data changed event
 		 */
 		chip->data_active = true;
-		pogo_transport_set_state(pogo_transport, ACC_DIRECT_HOST_OFFLINE, 0);
+		pogo_transport_set_state(pogo_transport, ACC_HUB_HOST_OFFLINE, 0);
 		break;
 	default:
 		break;
@@ -1430,6 +1431,14 @@ static void pogo_transport_usbc_device_off(struct pogo_transport *pogo_transport
 		chip->data_active = false;
 		pogo_transport_set_state(pogo_transport, ACC_DIRECT, 0);
 		break;
+	case ACC_HUB_HOST_OFFLINE:
+		/*
+		 * Clear data_active so that Type-C stack is able to call back for the data changed
+		 * event
+		 */
+		chip->data_active = false;
+		pogo_transport_set_state(pogo_transport, ACC_HUB, 0);
+		break;
 	default:
 		break;
 	}
@@ -1456,6 +1465,7 @@ static void pogo_transport_enable_usb_data(struct pogo_transport *pogo_transport
 		pogo_transport_set_state(pogo_transport, HOST_DIRECT_DOCK_OFFLINE, 0);
 		break;
 	case ACC_DIRECT_HOST_OFFLINE:
+	case ACC_HUB_HOST_OFFLINE:
 		/*
 		 * Clear data_active so that Type-C stack is able to call back for the data changed
 		 * event later
@@ -1628,6 +1638,7 @@ static void pogo_transport_hes_acc_detached(struct pogo_transport *pogo_transpor
 		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
 		break;
 	case ACC_DIRECT_HOST_OFFLINE:
+	case ACC_HUB_HOST_OFFLINE:
 		pogo_transport_reset_acc_detection(pogo_transport);
 		/* Clear data_active so that Type-C stack is able to enable the USB data later */
 		chip->data_active = false;
