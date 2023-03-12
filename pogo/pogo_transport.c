@@ -182,6 +182,10 @@ static int modparam_state_machine_enable;
 module_param_named(state_machine_enable, modparam_state_machine_enable, int, 0644);
 MODULE_PARM_DESC(state_machine_enable, "Enabling pogo state machine transition");
 
+extern void register_bus_suspend_callback(void (*callback)(void *bus_suspend_payload, bool main_hcd,
+							   bool suspend),
+					  void *data);
+
 struct pogo_event {
 	struct kthread_delayed_work work;
 	struct pogo_transport *pogo_transport;
@@ -259,6 +263,10 @@ struct pogo_transport {
 	 * Only applicable for debugfs capable builds.
 	 */
 	bool mock_hid_connected;
+	/* When true, lid is closed */
+	bool lid_closed;
+	/* When true, the bus has not yet suspended after the lid is closed. */
+	bool pending_first_suspend;
 
 	struct kthread_worker *wq;
 	struct kthread_delayed_work state_machine;
@@ -277,6 +285,8 @@ struct pogo_transport {
 	struct notifier_block udev_nb;
 	/* When true, a superspeed (or better) USB device is enumerated */
 	bool ss_udev_attached;
+	bool main_hcd_suspend;
+	bool shared_hcd_suspend;
 
 	/* To read voltage at the pogo pins */
 	struct power_supply *pogo_psy;
@@ -1918,7 +1928,6 @@ static void pogo_transport_event_handler(struct kthread_work *work)
 			logbuffer_log(pogo_transport->log, "EV:AUDIO_ATTACHED");
 			pogo_transport_audio_dev_attached(pogo_transport);
 		}
-
 		spin_lock(&pogo_transport->pogo_event_lock);
 	}
 	spin_unlock(&pogo_transport->pogo_event_lock);
@@ -2060,6 +2069,26 @@ static void orientation_changed(void *data)
 			pogo_transport_queue_event(pogo_transport, EVENT_USBC_ORIENTATION);
 		else
 			pogo_transport_event(pogo_transport, EVENT_ORIENTATION_CHANGED, 0);
+	}
+}
+
+static void usb_bus_suspend_resume(void *data, bool main_hcd, bool suspend)
+{
+	struct pogo_transport *pogo_transport = data;
+
+	if (main_hcd)
+		pogo_transport->main_hcd_suspend = suspend;
+	else
+		pogo_transport->shared_hcd_suspend = suspend;
+
+	/* TODO: mutex lock to protect the read/set of lid_closed and pending_first_suspend */
+	if (!pogo_transport->lid_closed)
+		return;
+
+	if (pogo_transport->main_hcd_suspend && pogo_transport->shared_hcd_suspend &&
+	    pogo_transport->pending_first_suspend) {
+		pogo_transport->pending_first_suspend = false;
+		logbuffer_log(pogo_transport->log, "first bus suspend after lid is closed");
 	}
 }
 
@@ -2593,6 +2622,8 @@ static int pogo_transport_probe(struct platform_device *pdev)
 			goto psy_put;
 	}
 
+	pogo_transport->pending_first_suspend = true;
+
 	/*
 	 * modparam_state_machine_enable
 	 * 0 or unset: If property "legacy-event-driven" is found in device tree, disable the state
@@ -2646,6 +2677,7 @@ static int pogo_transport_probe(struct platform_device *pdev)
 
 	register_data_active_callback(data_active_changed, pogo_transport);
 	register_orientation_callback(orientation_changed, pogo_transport);
+	register_bus_suspend_callback(usb_bus_suspend_resume, pogo_transport);
 	pogo_transport->udev_nb.notifier_call = pogo_transport_udev_notify;
 	usb_register_notify(&pogo_transport->udev_nb);
 	/* run once in case orientation has changed before registering the callback */
@@ -2886,12 +2918,18 @@ static ssize_t hall2_s_store(struct device *dev, struct device_attribute *attr, 
 	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
 	u8 data;
 
-	/* Reserved for keyboard status detection */
-
 	if (kstrtou8(buf, 0, &data))
 		return -EINVAL;
 
-	logbuffer_log(pogo_transport->log, "H2S: %u", data);
+	if (pogo_transport->lid_closed == !!data)
+		return size;
+
+	pogo_transport->lid_closed = !!data;
+
+	if (!pogo_transport->lid_closed)
+		pogo_transport->pending_first_suspend = true;
+
+	logbuffer_log(pogo_transport->log, "H2S: %u", pogo_transport->lid_closed);
 	return size;
 }
 static DEVICE_ATTR_WO(hall2_s);
