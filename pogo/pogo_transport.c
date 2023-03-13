@@ -225,6 +225,29 @@ static void ssphy_restart_control(struct pogo_transport *pogo_transport, bool en
 	gvotable_cast_long_vote(pogo_transport->ssphy_restart_votable, POGO_VOTER, enable, enable);
 }
 
+/*
+ * Update the polarity to EXTCON_USB_HOST. If @sync is true, use the sync version to set the
+ * property.
+ */
+static void pogo_transport_update_polarity(struct pogo_transport *pogo_transport, int polarity,
+					   bool sync)
+{
+	union extcon_property_value prop = {.intval = polarity};
+	struct max77759_plat *chip = pogo_transport->chip;
+	int ret;
+
+	if (sync)
+		ret = extcon_set_property_sync(chip->extcon, EXTCON_USB_HOST,
+					       EXTCON_PROP_USB_TYPEC_POLARITY,
+					       prop);
+	else
+		ret = extcon_set_property(chip->extcon, EXTCON_USB_HOST,
+					  EXTCON_PROP_USB_TYPEC_POLARITY,
+					  prop);
+	logbuffer_log(pogo_transport->log, "%sset polarity to %d sync %u", ret ? "failed to " : "",
+		      prop.intval, sync);
+}
+
 static void disable_and_bypass_hub(struct pogo_transport *pogo_transport)
 {
 	int ret;
@@ -273,6 +296,15 @@ static void switch_to_usbc_locked(struct pogo_transport *pogo_transport)
 	logbuffer_log(pogo_transport->log, "POGO: data-mux:%d",
 		      gpio_get_value(pogo_transport->pogo_data_mux_gpio));
 	data_alt_path_active(chip, false);
+
+	/*
+	 * Calling extcon_set_state_sync to turn off the host resets the orientation of USB-C and
+	 * the USB phy was also reset to the default value CC1.
+	 * Update the orientation for superspeed phy if USB-C is connected and CC2 is active.
+	 */
+	if (pogo_transport->polarity == TYPEC_POLARITY_CC2)
+		pogo_transport_update_polarity(pogo_transport, TYPEC_POLARITY_CC2, false);
+
 	enable_data_path_locked(chip);
 }
 
@@ -362,6 +394,13 @@ static void switch_to_hub_locked(struct pogo_transport *pogo_transport)
 
 	/* wait for the host mode to be turned off completely */
 	mdelay(60);
+
+	/*
+	 * The polarity was reset to 0 when Host Mode was disabled for USB-C or POGO. If current
+	 * polarity is CC2, update it to ssphy before enabling the Host Mode for hub.
+	 */
+	if (pogo_transport->polarity == TYPEC_POLARITY_CC2)
+		pogo_transport_update_polarity(pogo_transport, pogo_transport->polarity, false);
 
 	ret = extcon_set_state_sync(chip->extcon, EXTCON_USB_HOST, 1);
 	logbuffer_log(pogo_transport->log, "%s: %s turning on host for hub", __func__, ret < 0 ?
@@ -474,28 +513,8 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 		}
 		break;
 	case EVENT_MOVE_DATA_TO_USB:
-		if (pogo_transport->pogo_usb_active) {
+		if (pogo_transport->pogo_usb_active)
 			switch_to_usbc_locked(pogo_transport);
-
-			/*
-			 * During the function call "switch_to_usbc_locked", the USB controller
-			 * restarted and the orientation of the USB phy was reset to the default
-			 * value CC1 because Type-C drivers had no chance to update the real
-			 * orientation. Update and restart the superspeed phy if CC2 is connected.
-			 */
-			if (pogo_transport->polarity == TYPEC_POLARITY_CC2) {
-				union extcon_property_value prop;
-				prop.intval = (int)TYPEC_POLARITY_CC2;
-				ret = extcon_set_property_sync(chip->extcon, EXTCON_USB_HOST,
-							       EXTCON_PROP_USB_TYPEC_POLARITY,
-							       prop);
-				if (ret)
-					logbuffer_log(pogo_transport->log,
-						      "Failed to set polarity, ret %d", ret);
-
-				ssphy_restart_control(pogo_transport, true);
-			}
-		}
 		break;
 	case EVENT_MOVE_DATA_TO_POGO:
 		/* Currently this event is bundled to force_pogo. This case is unreachable. */
@@ -657,14 +676,8 @@ static void update_pogo_transport(struct pogo_transport *pogo_transport,
 	case EVENT_ORIENTATION_CHANGED:
 		/* Update the orientation and restart the ssphy if hub is enabled */
 		if (pogo_transport->pogo_hub_active) {
-			union extcon_property_value prop;
-			prop.intval = (int)pogo_transport->polarity;
-			ret = extcon_set_property_sync(chip->extcon, EXTCON_USB_HOST,
-						       EXTCON_PROP_USB_TYPEC_POLARITY, prop);
-			if (ret)
-				logbuffer_log(pogo_transport->log, "Failed to set polarity, ret %d",
-					      ret);
-
+			pogo_transport_update_polarity(pogo_transport, pogo_transport->polarity,
+						       true);
 			ssphy_restart_control(pogo_transport, true);
 		}
 		break;
