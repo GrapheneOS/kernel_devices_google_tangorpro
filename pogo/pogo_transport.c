@@ -1531,15 +1531,26 @@ static void pogo_transport_hes_acc_detected(struct pogo_transport *pogo_transpor
 					!pogo_transport->pogo_ovp_en_active_state);
 
 	if (pogo_transport->accessory_detection_enabled == ENABLED) {
-		if (!pogo_transport->acc_irq_enabled) {
-			enable_irq(pogo_transport->pogo_acc_irq);
-			pogo_transport->acc_irq_enabled = true;
-		}
+		switch (pogo_transport->state) {
+		case STANDBY:
+		case DEVICE_HUB:
+		case DEVICE_DIRECT:
+		case AUDIO_DIRECT:
+		case AUDIO_HUB:
+		case HOST_DIRECT:
+			if (!pogo_transport->acc_irq_enabled) {
+				enable_irq(pogo_transport->pogo_acc_irq);
+				pogo_transport->acc_irq_enabled = true;
+			}
 
-		ret = pogo_transport_acc_regulator(pogo_transport, true);
-		if (ret)
-			logbuffer_log(pogo_transport->log, "%s: Failed to enable acc_detect %d",
-				      __func__, ret);
+			ret = pogo_transport_acc_regulator(pogo_transport, true);
+			if (ret)
+				logbuffer_log(pogo_transport->log, "%s: Failed to enable acc_detect %d",
+					      __func__, ret);
+			break;
+		default:
+			break;
+		}
 	} else if (pogo_transport->accessory_detection_enabled == HALL_ONLY) {
 		switch (pogo_transport->state) {
 		case STANDBY:
