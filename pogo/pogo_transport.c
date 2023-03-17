@@ -1481,6 +1481,7 @@ static void pogo_transport_enable_usb_data(struct pogo_transport *pogo_transport
 
 /*
  * Call this function to:
+ *  - Disable POGO OVP
  *  - Disable Accessory Detection IRQ
  *  - Disable POGO Voltage Detection IRQ
  *  - Enable POGO Vout by voting 1 to charger_mode_votable
@@ -1493,6 +1494,14 @@ static void pogo_transport_skip_acc_detection(struct pogo_transport *pogo_transp
 
 	logbuffer_log(pogo_transport->log, "%s: Skip enabling comparator logic, enable vout",
 		      __func__);
+
+	/*
+	 * Disable OVP to prevent the voltage going through POGO_VIN. OVP will be re-enabled once
+	 * we vote GBMS_POGO_VIN and GBMS gets the votable result.
+	 */
+	if (pogo_transport->pogo_ovp_en_gpio >= 0)
+		gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
+					!pogo_transport->pogo_ovp_en_active_state);
 
 	if (pogo_transport->acc_irq_enabled) {
 		disable_irq(pogo_transport->pogo_acc_irq);
@@ -1525,11 +1534,6 @@ static void pogo_transport_hes_acc_detected(struct pogo_transport *pogo_transpor
 	struct max77759_plat *chip = pogo_transport->chip;
 	int ret;
 
-	/* Disable OVP to prevent the voltage going through POGO_VIN */
-	if (pogo_transport->pogo_ovp_en_gpio >= 0)
-		gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
-					!pogo_transport->pogo_ovp_en_active_state);
-
 	if (pogo_transport->accessory_detection_enabled == ENABLED) {
 		switch (pogo_transport->state) {
 		case STANDBY:
@@ -1538,6 +1542,14 @@ static void pogo_transport_hes_acc_detected(struct pogo_transport *pogo_transpor
 		case AUDIO_DIRECT:
 		case AUDIO_HUB:
 		case HOST_DIRECT:
+			/*
+			 * Disable OVP to prevent the voltage going through POGO_VIN. OVP will be
+			 * re-enabled once we vote GBMS_POGO_VIN and GBMS gets the votable result.
+			 */
+			if (pogo_transport->pogo_ovp_en_gpio >= 0)
+				gpio_set_value_cansleep(pogo_transport->pogo_ovp_en_gpio,
+							!pogo_transport->pogo_ovp_en_active_state);
+
 			if (!pogo_transport->acc_irq_enabled) {
 				enable_irq(pogo_transport->pogo_acc_irq);
 				pogo_transport->acc_irq_enabled = true;
