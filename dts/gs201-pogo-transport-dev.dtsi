@@ -16,6 +16,8 @@
 				/delete-property/ pogo-acc-capable;
 				/delete-property/ usb-hub-supply;
 				/delete-property/ acc-detect-supply;
+
+				legacy-event-driven;
 			};
 		};
 	};
