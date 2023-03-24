@@ -1591,6 +1591,11 @@ static void pogo_transport_hes_acc_detected(struct pogo_transport *pogo_transpor
 		case AUDIO_DIRECT:
 			pogo_transport_skip_acc_detection(pogo_transport);
 			switch_to_hub_locked(pogo_transport);
+			/*
+			 * switch_to_hub_locked cleared data_active. Since there is still a USB-C
+			 * accessory attached, set data_active.
+			 */
+			chip->data_active = true;
 			pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
 			break;
 		case DEVICE_HUB:
@@ -1769,6 +1774,10 @@ static void pogo_transport_acc_connected(struct pogo_transport *pogo_transport)
 				      __func__, ret);
 
 		switch_to_hub_locked(pogo_transport);
+		/*
+		 * switch_to_hub_locked cleared data_active. Since there is still a USB-C accessory
+		 * attached, set data_active.
+		 */
 		chip->data_active = true;
 		pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
 		break;
