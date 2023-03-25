@@ -471,6 +471,8 @@ static void switch_to_usbc_locked(struct pogo_transport *pogo_transport)
 		pogo_transport_update_polarity(pogo_transport, TYPEC_POLARITY_CC2, false);
 
 	enable_data_path_locked(chip);
+	/* pogo_transport->pogo_usb_active updated. Delaying till usb-c is activated. */
+	kobject_uevent(&pogo_transport->dev->kobj, KOBJ_CHANGE);
 }
 
 static void switch_to_pogo_locked(struct pogo_transport *pogo_transport)
@@ -503,6 +505,8 @@ static void switch_to_pogo_locked(struct pogo_transport *pogo_transport)
 	logbuffer_log(pogo_transport->log, "%s: %s turning on host for Pogo", __func__, ret < 0 ?
 		      "Failed" : "Succeeded");
 	pogo_transport->pogo_usb_active = true;
+	/* pogo_transport->pogo_usb_active updated */
+	kobject_uevent(&pogo_transport->dev->kobj, KOBJ_CHANGE);
 }
 
 static void switch_to_hub_locked(struct pogo_transport *pogo_transport)
@@ -534,6 +538,11 @@ static void switch_to_hub_locked(struct pogo_transport *pogo_transport)
 		ret = extcon_set_state_sync(chip->extcon, EXTCON_USB_HOST, 0);
 		logbuffer_log(pogo_transport->log, "%s: %s turning off host for Pogo", __func__,
 			      ret < 0 ? "Failed" : "Succeeded");
+		/*
+		 * Skipping KOBJ_CHANGE here as it's a transient state. Should be changed if the
+		 * function logic changes to having branches to exit the function before
+		 * pogo_usb_active to true.
+		 */
 		pogo_transport->pogo_usb_active = false;
 	}
 
@@ -571,9 +580,10 @@ static void switch_to_hub_locked(struct pogo_transport *pogo_transport)
 	logbuffer_log(pogo_transport->log, "%s: %s turning on host for hub", __func__, ret < 0 ?
 		      "Failed" : "Succeeded");
 
-	/* TODO: re-design the flags */
 	pogo_transport->pogo_usb_active = true;
 	pogo_transport->pogo_hub_active = true;
+	/* pogo_transport->pogo_usb_active updated.*/
+	kobject_uevent(&pogo_transport->dev->kobj, KOBJ_CHANGE);
 }
 
 static void update_pogo_transport(struct pogo_transport *pogo_transport,
