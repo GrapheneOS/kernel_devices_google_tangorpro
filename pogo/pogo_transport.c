@@ -354,22 +354,21 @@ static void update_extcon_dev(struct pogo_transport *pogo_transport, bool docked
 
 	/* While docking, Signal EXTCON_USB before signalling EXTCON_DOCK */
 	if (docked) {
-		ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, usb_capable ?
-					    1 : 0);
+		ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, usb_capable);
 		if (ret)
 			dev_err(pogo_transport->dev, "%s Failed to %s EXTCON_USB\n", __func__,
 				usb_capable ? "set" : "clear");
-		ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, 1);
+		ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, true);
 		if (ret)
 			dev_err(pogo_transport->dev, "%s Failed to set EXTCON_DOCK\n", __func__);
 		return;
 	}
 
 	/* b/241919179: While undocking, Signal EXTCON_DOCK before signalling EXTCON_USB */
-	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, 0);
+	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_DOCK, false);
 	if (ret)
 		dev_err(pogo_transport->dev, "%s Failed to clear EXTCON_DOCK\n", __func__);
-	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, 0);
+	ret = extcon_set_state_sync(pogo_transport->extcon, EXTCON_USB, false);
 	if (ret)
 		dev_err(pogo_transport->dev, "%s Failed to clear EXTCON_USB\n", __func__);
 }
@@ -1033,7 +1032,6 @@ static void pogo_transport_run_state_machine(struct pogo_transport *pogo_transpo
 		break;
 	case DOCKING_DEBOUNCED:
 		if (docked) {
-			update_extcon_dev(pogo_transport, true, true);
 			switch_to_hub_locked(pogo_transport);
 			pogo_transport_set_state(pogo_transport, DOCK_HUB, 0);
 		} else {
@@ -1044,10 +1042,13 @@ static void pogo_transport_run_state_machine(struct pogo_transport *pogo_transpo
 		/* clear Dock dock detected notification */
 		/* Clear accessory detected notification */
 		/* DATA_STATUS_DISABLED_DEVICE_DOCK */
+		update_extcon_dev(pogo_transport, true, true);
+		break;
+	case DOCK_AUDIO_HUB:
+		update_extcon_dev(pogo_transport, true, true);
 		break;
 	case DEVICE_DOCKING_DEBOUNCED:
 		if (docked) {
-			update_extcon_dev(pogo_transport, true, true);
 			switch_to_hub_locked(pogo_transport);
 			/* switch_to_hub_locked cleared data_active, set it here */
 			chip->data_active = true;
@@ -1057,11 +1058,11 @@ static void pogo_transport_run_state_machine(struct pogo_transport *pogo_transpo
 		}
 		break;
 	case DOCK_DEVICE_HUB:
+		update_extcon_dev(pogo_transport, true, true);
 		/* DATA_STATUS_DISABLED_DEVICE_DOCK */
 		break;
 	case DEVICE_HUB_DOCKING_DEBOUNCED:
 		if (docked) {
-			update_extcon_dev(pogo_transport, true, true);
 			pogo_transport_set_state(pogo_transport, DOCK_DEVICE_HUB, 0);
 		} else {
 			pogo_transport_set_state(pogo_transport, DEVICE_HUB, 0);
@@ -1069,18 +1070,17 @@ static void pogo_transport_run_state_machine(struct pogo_transport *pogo_transpo
 		break;
 	case AUDIO_DIRECT_DOCKING_DEBOUNCED:
 		if (docked) {
-			update_extcon_dev(pogo_transport, true, true);
 			pogo_transport_set_state(pogo_transport, AUDIO_DIRECT_DOCK_OFFLINE, 0);
 		} else {
 			pogo_transport_set_state(pogo_transport, AUDIO_DIRECT, 0);
 		}
 		break;
 	case AUDIO_DIRECT_DOCK_OFFLINE:
-		/* Push Dock dock detected notification */
+		/* Push dock detected notification */
+		update_extcon_dev(pogo_transport, true, true);
 		break;
 	case AUDIO_HUB_DOCKING_DEBOUNCED:
 		if (docked) {
-			update_extcon_dev(pogo_transport, true, true);
 			pogo_transport_set_state(pogo_transport, DOCK_AUDIO_HUB, 0);
 		} else {
 			pogo_transport_set_state(pogo_transport, AUDIO_HUB, 0);
@@ -1093,7 +1093,6 @@ static void pogo_transport_run_state_machine(struct pogo_transport *pogo_transpo
 		break;
 	case HOST_DIRECT_DOCKING_DEBOUNCED:
 		if (docked) {
-			update_extcon_dev(pogo_transport, true, true);
 			if (pogo_transport->force_pogo) {
 				switch_to_hub_locked(pogo_transport);
 				/* switch_to_hub_locked cleared data_active, set it here */
@@ -1109,9 +1108,11 @@ static void pogo_transport_run_state_machine(struct pogo_transport *pogo_transpo
 		break;
 	case HOST_DIRECT_DOCK_OFFLINE:
 		/* Push Dock dock detected notification */
+		update_extcon_dev(pogo_transport, true, true);
 		break;
 	case DOCK_HUB_HOST_OFFLINE:
 		/* Push accessory detected notification */
+		update_extcon_dev(pogo_transport, true, true);
 		break;
 	case STANDBY_ACC_DEBOUNCED:
 	case DEVICE_DIRECT_ACC_DEBOUNCED:
@@ -1233,34 +1234,29 @@ static void pogo_transport_pogo_irq_standby(struct pogo_transport *pogo_transpor
 {
 	struct max77759_plat *chip = pogo_transport->chip;
 
+	/* Pogo irq in standy implies undocked. Signal userspace before altering data path. */
+	update_extcon_dev(pogo_transport, false, false);
 	switch (pogo_transport->state) {
 	case STANDBY:
-		update_extcon_dev(pogo_transport, false, false);
 		pogo_transport_set_state(pogo_transport, STANDBY, 0);
 		break;
 	case DOCK_HUB:
-		update_extcon_dev(pogo_transport, false, false);
 		switch_to_usbc_locked(pogo_transport);
 		pogo_transport_set_state(pogo_transport, STANDBY, 0);
 		break;
 	case DOCK_DEVICE_HUB:
-		update_extcon_dev(pogo_transport, false, false);
 		pogo_transport_set_state(pogo_transport, DEVICE_HUB, 0);
 		break;
 	case DOCK_AUDIO_HUB:
-		update_extcon_dev(pogo_transport, false, false);
 		pogo_transport_set_state(pogo_transport, AUDIO_HUB, 0);
 		break;
 	case AUDIO_DIRECT_DOCK_OFFLINE:
-		update_extcon_dev(pogo_transport, false, false);
 		pogo_transport_set_state(pogo_transport, AUDIO_DIRECT, 0);
 		break;
 	case HOST_DIRECT_DOCK_OFFLINE:
-		update_extcon_dev(pogo_transport, false, false);
 		pogo_transport_set_state(pogo_transport, HOST_DIRECT, 0);
 		break;
 	case DOCK_HUB_HOST_OFFLINE:
-		update_extcon_dev(pogo_transport, false, false);
 		/* Clear data_active so that Type-C stack is able to enable the USB data later */
 		chip->data_active = false;
 		switch_to_usbc_locked(pogo_transport);
