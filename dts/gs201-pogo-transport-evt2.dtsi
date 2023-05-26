@@ -15,6 +15,7 @@
 			google_pogo: google,pogo {
 				/delete-property/ pogo-acc-capable;
 				pogo-acc-hall-only;
+				legacy-event-driven;
 			};
 		};
 	};
