@@ -5,6 +5,7 @@
  * Pogo management driver
  */
 
+#include <linux/alarmtimer.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/extcon.h>
@@ -31,12 +32,18 @@
 #include "tcpci_max77759.h"
 
 #define POGO_TIMEOUT_MS 10000
+#define LC_WAKEUP_TIMEOUT_MS 10000
 #define POGO_USB_CAPABLE_THRESHOLD_UV 10500000
 #define POGO_USB_RETRY_COUNT 10
 #define POGO_USB_RETRY_INTEREVAL_MS 50
 #define POGO_PSY_DEBOUNCE_MS 50
 #define POGO_PSY_NRDY_RETRY_MS 500
 #define POGO_ACC_GPIO_DEBOUNCE_MS 20
+#define LC_DELAY_CHECK_MS 5000
+#define LC_DISABLE_MS 1800000 /* 30 min */
+#define LC_ENABLE_MS 300000 /* 5 min */
+#define LC_BOOTUP_MS 3000
+#define ACC_CHARGING_TIMEOUT_SEC 1800 /* 30 min */
 
 #define KEEP_USB_PATH 2
 #define KEEP_HUB_PATH 2
@@ -77,7 +84,11 @@
  *  (O)	ACC_HUB,			// Acc online, hub enabled
  *  (T)	ACC_HUB_HOST_OFFLINE,		// Acc online, hub enabled, usb host offline
  *  (P)	ACC_AUDIO_HUB,			// Acc online, usb audio online, hub enabled
- *  (Q)	LID_CLOSE,
+ *  (Q)	LC,				// Pogo Vout off
+ *  (U)	LC_DEVICE_DIRECT,		// Pogo Vout off, Usb device online, hub disabled
+ *  (V)	LC_AUDIO_DIRECT,		// Pogo Vout off, Usb audio online, hub disabled
+ *  (W)	LC_ALL_OFFLINE,			// Pogo Vout off, Usb host offline, hub disabled
+ *  (X)	LC_HOST_DIRECT,			// Pogo Vout off, USb host online, hub disabled
  *  (R)	HOST_DIRECT_ACC_OFFLINE,	// Usb host online, acc offline, hub disabled
  *  (S)	ACC_DIRECT_HOST_OFFLINE,	// Acc online, usb host offline
  */
@@ -113,7 +124,11 @@
 	S(ACC_HUB),				\
 	S(ACC_HUB_HOST_OFFLINE),		\
 	S(ACC_AUDIO_HUB),			\
-	S(LID_CLOSE),				\
+	S(LC),					\
+	S(LC_DEVICE_DIRECT),			\
+	S(LC_AUDIO_DIRECT),			\
+	S(LC_ALL_OFFLINE),			\
+	S(LC_HOST_DIRECT),			\
 	S(HOST_DIRECT_ACC_OFFLINE),		\
 	S(ACC_DIRECT_HOST_OFFLINE)
 
@@ -166,7 +181,18 @@ enum pogo_event_type {
 #define EVENT_ACC_CONNECTED		BIT(5)
 #define EVENT_AUDIO_DEV_ATTACHED	BIT(6)
 #define EVENT_USBC_ORIENTATION		BIT(7)
+#define EVENT_LC_STATUS_CHANGED		BIT(8)
+#define EVENT_USB_SUSPEND		BIT(9)
 #define EVENT_LAST_EVENT_TYPE		BIT(63)
+
+enum lc_stages {
+	STAGE_UNKNOWN,
+	STAGE_WAIT_FOR_SUSPEND,
+	STAGE_VOUT_ENABLED,
+	STAGE_VOUT_DISABLED,
+};
+
+#define bus_suspend(p) ((p)->main_hcd_suspend && (p)->shared_hcd_suspend)
 
 static bool modparam_force_usb;
 module_param_named(force_usb, modparam_force_usb, bool, 0644);
@@ -263,10 +289,10 @@ struct pogo_transport {
 	 * Only applicable for debugfs capable builds.
 	 */
 	bool mock_hid_connected;
-	/* When true, lid is closed */
-	bool lid_closed;
-	/* When true, the bus has not yet suspended after the lid is closed. */
-	bool pending_first_suspend;
+	/* When true, lc is triggered */
+	bool lc;
+	/* When true, the bus not yet suspended after lc is triggered */
+	bool wait_for_suspend;
 
 	struct kthread_worker *wq;
 	struct kthread_delayed_work state_machine;
@@ -276,6 +302,13 @@ struct pogo_transport {
 	enum pogo_state delayed_state;
 	unsigned long delayed_runtime;
 	unsigned long delay_ms;
+	unsigned long lc_delay_check_ms;
+	unsigned long lc_enable_ms;
+	unsigned long lc_disable_ms;
+	unsigned long lc_bootup_ms;
+	u64 acc_charging_timeout_sec;
+	u64 acc_charging_full_begin_ns;
+	u64 acc_discharging_begin_ns;
 	unsigned long event_map;
 	bool state_machine_running;
 	bool state_machine_enabled;
@@ -290,6 +323,10 @@ struct pogo_transport {
 
 	/* To read voltage at the pogo pins */
 	struct power_supply *pogo_psy;
+	/* To read the status exported from pogo accessory charger */
+	struct power_supply *acc_charger_psy;
+	char *acc_charger_psy_name;
+	enum lc_stages lc_stage;
 	/* Retry when voltage is less than POGO_USB_CAPABLE_THRESHOLD_UV */
 	unsigned int retry_count;
 	/* To signal userspace extcon observer */
@@ -301,6 +338,9 @@ struct pogo_transport {
 
 	/* Used for cancellable work such as pogo debouncing */
 	struct kthread_delayed_work pogo_accessory_debounce_work;
+
+	struct alarm lc_check_alarm;
+	struct kthread_work lc_work;
 
 	/* Pogo accessory detection status */
 	enum pogo_accessory_detection accessory_detection_enabled;
@@ -943,8 +983,9 @@ static void pogo_transport_set_state(struct pogo_transport *pogo_transport, enum
 		pogo_transport->delayed_runtime = jiffies + msecs_to_jiffies(delay_ms);
 		pogo_transport->delay_ms = delay_ms;
 	} else {
-		logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO, "state change %s -> %s",
-			       pogo_states[pogo_transport->state], pogo_states[state]);
+		logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO, "state change %s -> %s [%s]",
+			       pogo_states[pogo_transport->state], pogo_states[state],
+			       pogo_transport->lc ? "lc" : "");
 		pogo_transport->delayed_state = INVALID_STATE;
 		pogo_transport->prev_state = pogo_transport->state;
 		pogo_transport->state = state;
@@ -1169,10 +1210,11 @@ static void pogo_transport_state_machine_work(struct kthread_work *work)
 
 	if (pogo_transport->delayed_state) {
 		logbuffer_logk(pogo_transport->log, LOGLEVEL_INFO,
-			       "state change %s -> %s [delayed %ld ms]",
+			       "state change %s -> %s [delayed %ld ms] [%s]",
 			       pogo_states[pogo_transport->state],
 			       pogo_states[pogo_transport->delayed_state],
-			       pogo_transport->delay_ms);
+			       pogo_transport->delay_ms,
+			       pogo_transport->lc ? "lc" : "");
 		pogo_transport->prev_state = pogo_transport->state;
 		pogo_transport->state = pogo_transport->delayed_state;
 		pogo_transport->delayed_state = INVALID_STATE;
@@ -1297,6 +1339,11 @@ static void pogo_transport_usbc_host_on(struct pogo_transport *pogo_transport)
 		chip->data_active = true;
 		pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
 		break;
+	case LC:
+		/* Set data_active since USB-C device is attached */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, LC_DEVICE_DIRECT, 0);
+		break;
 	default:
 		break;
 	}
@@ -1361,6 +1408,12 @@ static void pogo_transport_usbc_host_off(struct pogo_transport *pogo_transport)
 		chip->data_active = false;
 		pogo_transport_set_state(pogo_transport, ACC_HUB, 0);
 		break;
+	case LC_DEVICE_DIRECT:
+	case LC_AUDIO_DIRECT:
+		/* Clear data_active since USB-C device is detached */
+		chip->data_active = false;
+		pogo_transport_set_state(pogo_transport, LC, 0);
+		break;
 	default:
 		break;
 	}
@@ -1403,6 +1456,14 @@ static void pogo_transport_usbc_device_on(struct pogo_transport *pogo_transport)
 		 */
 		chip->data_active = true;
 		pogo_transport_set_state(pogo_transport, ACC_HUB_HOST_OFFLINE, 0);
+		break;
+	case LC:
+		/*
+		 * Set data_active so that once USB-C cable is detached later, Type-C stack is able
+		 * to call back for the data changed event
+		 */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, LC_HOST_DIRECT, 0);
 		break;
 	default:
 		break;
@@ -1454,6 +1515,15 @@ static void pogo_transport_usbc_device_off(struct pogo_transport *pogo_transport
 		 */
 		chip->data_active = false;
 		pogo_transport_set_state(pogo_transport, ACC_HUB, 0);
+		break;
+	case LC_ALL_OFFLINE:
+	case LC_HOST_DIRECT:
+		/*
+		 * Clear data_active so that Type-C stack is able to call back for the data changed
+		 * event
+		 */
+		chip->data_active = false;
+		pogo_transport_set_state(pogo_transport, LC, 0);
 		break;
 	default:
 		break;
@@ -1838,6 +1908,9 @@ static void pogo_transport_audio_dev_attached(struct pogo_transport *pogo_transp
 	case ACC_DEVICE_HUB:
 		pogo_transport_set_state(pogo_transport, ACC_AUDIO_HUB, 0);
 		break;
+	case LC_DEVICE_DIRECT:
+		pogo_transport_set_state(pogo_transport, LC_AUDIO_DIRECT, 0);
+		break;
 	default:
 		break;
 	}
@@ -1871,6 +1944,283 @@ static void pogo_transport_usbc_orientation_changed(struct pogo_transport *pogo_
 	default:
 		break;
 	}
+}
+
+static void pogo_transport_lc_clear(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	switch (pogo_transport->state) {
+	case LC:
+		pogo_transport_skip_acc_detection(pogo_transport);
+		if (!pogo_transport->mfg_acc_test)
+			switch_to_pogo_locked(pogo_transport);
+		pogo_transport_set_state(pogo_transport, ACC_DIRECT, 0);
+		break;
+	case LC_DEVICE_DIRECT:
+		pogo_transport_skip_acc_detection(pogo_transport);
+		if (!pogo_transport->mfg_acc_test) {
+			switch_to_hub_locked(pogo_transport);
+			chip->data_active = true;
+		}
+		pogo_transport_set_state(pogo_transport, ACC_DEVICE_HUB, 0);
+		break;
+	case LC_AUDIO_DIRECT:
+		pogo_transport_skip_acc_detection(pogo_transport);
+		if (!pogo_transport->mfg_acc_test) {
+			switch_to_hub_locked(pogo_transport);
+			chip->data_active = true;
+		}
+		pogo_transport_set_state(pogo_transport, ACC_AUDIO_HUB, 0);
+		break;
+	case LC_ALL_OFFLINE:
+		pogo_transport_skip_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, ACC_DIRECT_HOST_OFFLINE, 0);
+		break;
+	case LC_HOST_DIRECT:
+		pogo_transport_skip_acc_detection(pogo_transport);
+		if (!pogo_transport->mfg_acc_test) {
+			switch_to_pogo_locked(pogo_transport);
+			chip->data_active = true;
+		}
+		pogo_transport_set_state(pogo_transport, HOST_DIRECT_ACC_OFFLINE, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+static void pogo_transport_lc(struct pogo_transport *pogo_transport)
+{
+	switch (pogo_transport->state) {
+	case ACC_DIRECT:
+	case ACC_HUB:
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, LC, 0);
+		break;
+	case ACC_DEVICE_HUB:
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, LC_DEVICE_DIRECT, 0);
+		break;
+	case ACC_AUDIO_HUB:
+		switch_to_usbc_locked(pogo_transport);
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, LC_AUDIO_DIRECT, 0);
+		break;
+	case ACC_DIRECT_HOST_OFFLINE:
+	case ACC_HUB_HOST_OFFLINE:
+		switch_to_pogo_locked(pogo_transport);
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, LC_ALL_OFFLINE, 0);
+		break;
+	case HOST_DIRECT_ACC_OFFLINE:
+		pogo_transport_reset_acc_detection(pogo_transport);
+		pogo_transport_set_state(pogo_transport, LC_HOST_DIRECT, 0);
+		break;
+	default:
+		break;
+	}
+}
+
+#define ACC_CHARGER_PSY_RETRY_COUNT 5
+#define ACC_CHARGER_PSY_RETRY_TIMEOUT_MS 100
+static int pogo_transport_acc_charger_status(struct pogo_transport *pogo_transport,
+					     union power_supply_propval *acc_charger_status,
+					     union power_supply_propval *acc_charger_capacity)
+{
+	int ret, count;
+	bool retry;
+
+	if (pogo_transport->pogo_acc_gpio <= 0 || !pogo_transport->acc_charger_psy_name)
+		return -EINVAL;
+
+	for (count = 0; count < ACC_CHARGER_PSY_RETRY_COUNT; count++) {
+		retry = false;
+
+		pogo_transport->acc_charger_psy = power_supply_get_by_name(
+				pogo_transport->acc_charger_psy_name);
+		if (IS_ERR_OR_NULL(pogo_transport->acc_charger_psy)) {
+			logbuffer_logk(pogo_transport->log, LOGLEVEL_ERR,
+				       "acc_charger psy delayed get failed");
+			return -ENODEV;
+		}
+
+		ret = power_supply_get_property(pogo_transport->acc_charger_psy,
+						POWER_SUPPLY_PROP_STATUS, acc_charger_status);
+		if (ret) {
+			logbuffer_log(pogo_transport->log,
+				      "Failed to read acc_charger status (%d), count %d", ret,
+				      count);
+			acc_charger_status->intval = POWER_SUPPLY_STATUS_UNKNOWN;
+			retry = true;
+		}
+
+		ret = power_supply_get_property(pogo_transport->acc_charger_psy,
+						POWER_SUPPLY_PROP_CAPACITY, acc_charger_capacity);
+		if (ret) {
+			logbuffer_log(pogo_transport->log,
+				      "Failed to read acc_charger capacity (%d), count %d", ret,
+				      count);
+			acc_charger_capacity->intval = 0;
+			retry = true;
+		}
+
+		if (!retry)
+			break;
+
+		mdelay(ACC_CHARGER_PSY_RETRY_TIMEOUT_MS);
+	}
+
+	return 0;
+}
+
+#define ACC_CHARGER_SOC_FULL 100
+#define ACC_CHARGER_NOT_PRESENT 0
+static bool lc_acc_charging_ended(struct pogo_transport *pogo_transport)
+{
+	union power_supply_propval acc_charger_status = {.intval = POWER_SUPPLY_STATUS_UNKNOWN};
+	union power_supply_propval acc_charger_capacity = {0};
+	u64 now, elapsed_sec;
+	bool charging_ended;
+	int ret;
+
+	ret = pogo_transport_acc_charger_status(pogo_transport, &acc_charger_status,
+						&acc_charger_capacity);
+	logbuffer_log(pogo_transport->log, "ret:%d charger_status:%d cap:%d", ret,
+		      acc_charger_status.intval, acc_charger_capacity.intval);
+
+	if (ret < 0) {
+		/*
+		 * It is expected that pogo Vout will be turned off. So it is safe to reset the
+		 * begin time here.
+		 */
+		pogo_transport->acc_charging_full_begin_ns = 0;
+		return true;
+	}
+
+	if (acc_charger_status.intval == POWER_SUPPLY_STATUS_CHARGING &&
+	    acc_charger_capacity.intval == ACC_CHARGER_SOC_FULL) {
+		now = ktime_get_boottime_ns();
+		/* other status -> "charging + soc full" */
+		if (!pogo_transport->acc_charging_full_begin_ns) {
+			pogo_transport->acc_charging_full_begin_ns = now;
+			return false;
+		/* continuous "charging + soc full" */
+		} else {
+			elapsed_sec = div_u64(now - pogo_transport->acc_charging_full_begin_ns,
+					      (u32)NSEC_PER_SEC);
+			/* elapsed time >= timeout */
+			if (elapsed_sec >= pogo_transport->acc_charging_timeout_sec) {
+				/*
+				 * It is expected that pogo Vout will be turned off. So it is safe
+				 * to reset the begin time here.
+				 */
+				pogo_transport->acc_charging_full_begin_ns = 0;
+				return true;
+			} else {
+				return false;
+			}
+		}
+	}
+
+	if (acc_charger_status.intval == POWER_SUPPLY_STATUS_DISCHARGING &&
+	    acc_charger_capacity.intval == ACC_CHARGER_NOT_PRESENT) {
+		now = ktime_get_boottime_ns();
+		/* other status -> "discharging + 0" */
+		if (!pogo_transport->acc_discharging_begin_ns) {
+			pogo_transport->acc_discharging_begin_ns = now;
+			return false;
+		/* continuous "discharging + 0" */
+		} else {
+			elapsed_sec = div_u64(now - pogo_transport->acc_discharging_begin_ns,
+					      (u32)NSEC_PER_SEC);
+			/* elapsed time >= timeout */
+			if (elapsed_sec >= pogo_transport->acc_charging_timeout_sec) {
+				/*
+				 * It is expected that pogo Vout will be turned off. So it is safe
+				 * to reset the begin time here.
+				 */
+				pogo_transport->acc_discharging_begin_ns = 0;
+				return true;
+			} else {
+				return false;
+			}
+		}
+	}
+
+
+	pogo_transport->acc_discharging_begin_ns = 0;
+	pogo_transport->acc_charging_full_begin_ns = 0;
+
+	charging_ended = acc_charger_status.intval == POWER_SUPPLY_STATUS_DISCHARGING &&
+			 acc_charger_capacity.intval == ACC_CHARGER_SOC_FULL;
+	charging_ended |= acc_charger_status.intval == POWER_SUPPLY_STATUS_FULL;
+
+	return charging_ended;
+}
+
+static void pogo_transport_lc_stage_transition(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+	bool acc_charging_ended;
+
+	logbuffer_log(pogo_transport->log, "stage:%u lc:%u wait_for_suspend:%u",
+		      pogo_transport->lc_stage, pogo_transport->lc,
+		      pogo_transport->wait_for_suspend);
+
+	if (!pogo_transport->lc)
+		return;
+
+	mutex_lock(&chip->data_path_lock);
+
+	switch (pogo_transport->lc_stage) {
+	case STAGE_WAIT_FOR_SUSPEND:
+		if (pogo_transport->wait_for_suspend)
+			break;
+
+		if (!pogo_transport->acc_charger_psy_name) {
+			pogo_transport_lc(pogo_transport);
+			pogo_transport->lc_stage = STAGE_VOUT_DISABLED;
+			break;
+		}
+
+		acc_charging_ended = lc_acc_charging_ended(pogo_transport);
+		if (acc_charging_ended) {
+			pogo_transport_lc(pogo_transport);
+			pogo_transport->lc_stage = STAGE_VOUT_DISABLED;
+			alarm_start_relative(&pogo_transport->lc_check_alarm,
+					     ms_to_ktime(pogo_transport->lc_disable_ms));
+		} else {
+			pogo_transport->lc_stage = STAGE_VOUT_ENABLED;
+			alarm_start_relative(&pogo_transport->lc_check_alarm,
+					     ms_to_ktime(pogo_transport->lc_enable_ms));
+		}
+		break;
+	case STAGE_VOUT_DISABLED:
+		pogo_transport_lc_clear(pogo_transport);
+		pogo_transport->lc_stage = STAGE_VOUT_ENABLED;
+		alarm_start_relative(&pogo_transport->lc_check_alarm,
+				     ms_to_ktime(pogo_transport->lc_bootup_ms));
+		break;
+	case STAGE_VOUT_ENABLED:
+		acc_charging_ended = lc_acc_charging_ended(pogo_transport);
+		if (acc_charging_ended) {
+			pogo_transport_lc(pogo_transport);
+			pogo_transport->lc_stage = STAGE_VOUT_DISABLED;
+			alarm_start_relative(&pogo_transport->lc_check_alarm,
+					     ms_to_ktime(pogo_transport->lc_disable_ms));
+		} else {
+			alarm_start_relative(&pogo_transport->lc_check_alarm,
+					     ms_to_ktime(pogo_transport->lc_enable_ms));
+		}
+		break;
+	default:
+		break;
+	}
+
+	mutex_unlock(&chip->data_path_lock);
 }
 
 static void pogo_transport_event_handler(struct kthread_work *work)
@@ -1943,6 +2293,28 @@ static void pogo_transport_event_handler(struct kthread_work *work)
 			logbuffer_log(pogo_transport->log, "EV:AUDIO_ATTACHED");
 			pogo_transport_audio_dev_attached(pogo_transport);
 		}
+		if (events & EVENT_USB_SUSPEND) {
+			logbuffer_log(pogo_transport->log, "EV:USB_SUSPEND stage %u",
+				      pogo_transport->lc_stage);
+			if (pogo_transport->lc &&
+			    pogo_transport->lc_stage == STAGE_WAIT_FOR_SUSPEND)
+				alarm_start_relative(&pogo_transport->lc_check_alarm, 0);
+		}
+		if (events & EVENT_LC_STATUS_CHANGED) {
+			logbuffer_log(pogo_transport->log, "EV:LC %u", pogo_transport->lc);
+			if (pogo_transport->lc) {
+				if (bus_suspend(pogo_transport))
+					pogo_transport->wait_for_suspend = false;
+				pogo_transport->lc_stage = STAGE_WAIT_FOR_SUSPEND;
+				alarm_start_relative(&pogo_transport->lc_check_alarm,
+						ms_to_ktime(pogo_transport->lc_delay_check_ms));
+			} else {
+				if (pogo_transport->lc_stage == STAGE_VOUT_DISABLED)
+					pogo_transport_lc_clear(pogo_transport);
+				pogo_transport->lc_stage = STAGE_UNKNOWN;
+				pogo_transport->wait_for_suspend = true;
+			}
+		}
 		spin_lock(&pogo_transport->pogo_event_lock);
 	}
 	spin_unlock(&pogo_transport->pogo_event_lock);
@@ -1965,6 +2337,24 @@ static void pogo_transport_queue_event(struct pogo_transport *pogo_transport, un
 	spin_unlock_irqrestore(&pogo_transport->pogo_event_lock, flags);
 
 	kthread_queue_work(pogo_transport->wq, &pogo_transport->event_work);
+}
+
+static void lc_check_alarm_work_item(struct kthread_work *work)
+{
+	struct pogo_transport *pogo_transport = container_of(work, struct pogo_transport, lc_work);
+
+	pogo_transport_lc_stage_transition(pogo_transport);
+}
+
+static enum alarmtimer_restart lc_check_alarm_handler(struct alarm *alarm, ktime_t time)
+{
+	struct pogo_transport *pogo_transport = container_of(alarm, struct pogo_transport,
+							     lc_check_alarm);
+
+	pm_wakeup_event(pogo_transport->dev, LC_WAKEUP_TIMEOUT_MS);
+	kthread_queue_work(pogo_transport->wq, &pogo_transport->lc_work);
+
+	return ALARMTIMER_NORESTART;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -2096,14 +2486,15 @@ static void usb_bus_suspend_resume(void *data, bool main_hcd, bool suspend)
 	else
 		pogo_transport->shared_hcd_suspend = suspend;
 
-	/* TODO: mutex lock to protect the read/set of lid_closed and pending_first_suspend */
-	if (!pogo_transport->lid_closed)
+	/* TODO: mutex lock to protect the read/set of lc and wait_for_suspend */
+	if (!pogo_transport->lc)
 		return;
 
-	if (pogo_transport->main_hcd_suspend && pogo_transport->shared_hcd_suspend &&
-	    pogo_transport->pending_first_suspend) {
-		pogo_transport->pending_first_suspend = false;
-		logbuffer_log(pogo_transport->log, "first bus suspend after lid is closed");
+	/* lc and still wait for suspend */
+	if (bus_suspend(pogo_transport) && pogo_transport->wait_for_suspend) {
+		pogo_transport->wait_for_suspend = false;
+		pogo_transport_queue_event(pogo_transport, EVENT_USB_SUSPEND);
+		logbuffer_log(pogo_transport->log, "first bus suspend after lc");
 	}
 }
 
@@ -2210,6 +2601,28 @@ static int mock_hid_connected_get(void *data, u64 *val)
 DEFINE_SIMPLE_ATTRIBUTE(mock_hid_connected_fops, mock_hid_connected_get, mock_hid_connected_set,
 			"%llu\n");
 
+#define POGO_TRANSPORT_DEBUGFS_RW(_name)                                                        \
+static int _name##_set(void *data, u64 val)                                                     \
+{                                                                                               \
+	struct pogo_transport *pogo_transport  = data;                                          \
+	pogo_transport->_name = val;                                                          \
+	logbuffer_log(pogo_transport->log, "%s: %lu", __func__,                                 \
+		      pogo_transport->_name);                                                   \
+	return 0;                                                                               \
+}                                                                                               \
+static int _name##_get(void *data, u64 *val)                                                    \
+{                                                                                               \
+	struct pogo_transport *pogo_transport  = data;                                          \
+	*val = (u64)pogo_transport->_name;                                                      \
+	return 0;                                                                               \
+}                                                                                               \
+DEFINE_SIMPLE_ATTRIBUTE(_name##_fops, _name##_get, _name##_set, "%llu\n")
+POGO_TRANSPORT_DEBUGFS_RW(lc_delay_check_ms);
+POGO_TRANSPORT_DEBUGFS_RW(lc_enable_ms);
+POGO_TRANSPORT_DEBUGFS_RW(lc_disable_ms);
+POGO_TRANSPORT_DEBUGFS_RW(lc_bootup_ms);
+POGO_TRANSPORT_DEBUGFS_RW(acc_charging_timeout_sec);
+
 /*-------------------------------------------------------------------------*/
 /* Initialization                                                          */
 /*-------------------------------------------------------------------------*/
@@ -2227,8 +2640,15 @@ static void pogo_transport_init_debugfs(struct pogo_transport *pogo_transport)
 
 	debugfs_create_file("mock_hid_connected", 0644, dentry, pogo_transport,
 			    &mock_hid_connected_fops);
+	debugfs_create_file("lc_delay_check_ms", 0644, dentry, pogo_transport,
+			    &lc_delay_check_ms_fops);
+	debugfs_create_file("lc_enable_ms", 0644, dentry, pogo_transport, &lc_enable_ms_fops);
+	debugfs_create_file("lc_disable_ms", 0644, dentry, pogo_transport, &lc_disable_ms_fops);
+	debugfs_create_file("lc_bootup_ms", 0644, dentry, pogo_transport, &lc_bootup_ms_fops);
+	debugfs_create_file("acc_charging_timeout_sec", 0644, dentry, pogo_transport,
+			    &acc_charging_timeout_sec_fops);
 }
-#endif
+#endif /* IS_ENABLED(CONFIG_DEBUG_FS) */
 
 static int init_regulator(struct pogo_transport *pogo_transport)
 {
@@ -2511,11 +2931,11 @@ static int init_pogo_ovp_gpio(struct pogo_transport *pogo_transport)
 static int pogo_transport_probe(struct platform_device *pdev)
 {
 	struct pogo_transport *pogo_transport;
-	int ret = 0;
 	struct device_node *data_np, *dn;
 	struct i2c_client *data_client;
 	struct max77759_plat *chip;
 	char *pogo_psy_name;
+	int ret;
 
 	data_np = of_parse_phandle(pdev->dev.of_node, "data-phandle", 0);
 	if (!data_np) {
@@ -2566,6 +2986,9 @@ static int pogo_transport_probe(struct platform_device *pdev)
 				  process_debounce_event);
 	kthread_init_delayed_work(&pogo_transport->state_machine,
 				  pogo_transport_state_machine_work);
+
+	alarm_init(&pogo_transport->lc_check_alarm, ALARM_BOOTTIME, lc_check_alarm_handler);
+	kthread_init_work(&pogo_transport->lc_work, lc_check_alarm_work_item);
 	kthread_init_work(&pogo_transport->event_work, pogo_transport_event_handler);
 
 	dn = dev_of_node(pogo_transport->dev);
@@ -2637,8 +3060,6 @@ static int pogo_transport_probe(struct platform_device *pdev)
 			goto psy_put;
 	}
 
-	pogo_transport->pending_first_suspend = true;
-
 	/*
 	 * modparam_state_machine_enable
 	 * 0 or unset: If property "legacy-event-driven" is found in device tree, disable the state
@@ -2658,8 +3079,11 @@ static int pogo_transport_probe(struct platform_device *pdev)
 			pogo_transport->state_machine_enabled = DEFAULT_STATE_MACHINE_ENABLE;
 	}
 
-	if (pogo_transport->state_machine_enabled)
+	if (pogo_transport->state_machine_enabled) {
 		pogo_transport_set_state(pogo_transport, STANDBY, 0);
+		pogo_transport->wait_for_suspend = true;
+		pogo_transport->lc_stage = STAGE_UNKNOWN;
+	}
 
 	if (modparam_pogo_accessory_enable) {
 		ret = init_acc_gpio(pogo_transport);
@@ -2675,6 +3099,21 @@ static int pogo_transport_probe(struct platform_device *pdev)
 			pogo_transport->accessory_detection_enabled = ENABLED;
 		else
 			pogo_transport->accessory_detection_enabled = HALL_ONLY;
+	}
+
+	if (pogo_transport->pogo_acc_gpio > 0) {
+		pogo_transport->acc_charger_psy_name =
+				(char *)of_get_property(dn, "acc-charger-psy-name", NULL);
+		if (!pogo_transport->acc_charger_psy_name)
+			dev_info(pogo_transport->dev, "acc-charger-psy-name not set\n");
+
+		pogo_transport->lc_delay_check_ms = LC_DELAY_CHECK_MS;
+		pogo_transport->lc_disable_ms = LC_DISABLE_MS;
+		pogo_transport->lc_enable_ms = LC_ENABLE_MS;
+		pogo_transport->lc_bootup_ms = LC_BOOTUP_MS;
+		pogo_transport->acc_charging_timeout_sec = ACC_CHARGING_TIMEOUT_SEC;
+		pogo_transport->acc_charging_full_begin_ns = 0;
+		pogo_transport->acc_discharging_begin_ns = 0;
 	}
 
 	pogo_transport->disable_voltage_detection =
@@ -2704,6 +3143,8 @@ static int pogo_transport_probe(struct platform_device *pdev)
 	return 0;
 
 psy_put:
+	if (pogo_transport->acc_charger_psy)
+		power_supply_put(pogo_transport->acc_charger_psy);
 	power_supply_put(pogo_transport->pogo_psy);
 destroy_worker:
 	kthread_destroy_worker(pogo_transport->wq);
@@ -2751,6 +3192,8 @@ static int pogo_transport_remove(struct platform_device *pdev)
 	}
 	disable_irq_wake(pogo_transport->pogo_irq);
 	devm_free_irq(pogo_transport->dev, pogo_transport->pogo_irq, pogo_transport);
+	if (pogo_transport->acc_charger_psy)
+		power_supply_put(pogo_transport->acc_charger_psy);
 	power_supply_put(pogo_transport->pogo_psy);
 	kthread_destroy_worker(pogo_transport->wq);
 	logbuffer_unregister(pogo_transport->log);
@@ -2936,15 +3379,21 @@ static ssize_t hall2_s_store(struct device *dev, struct device_attribute *attr, 
 	if (kstrtou8(buf, 0, &data))
 		return -EINVAL;
 
-	if (pogo_transport->lid_closed == !!data)
+	if (pogo_transport->lc == !!data)
 		return size;
 
-	pogo_transport->lid_closed = !!data;
+	pogo_transport->lc = !!data;
 
-	if (!pogo_transport->lid_closed)
-		pogo_transport->pending_first_suspend = true;
+	if (!pogo_transport->lc) {
+		alarm_cancel(&pogo_transport->lc_check_alarm);
+		kthread_cancel_work_sync(&pogo_transport->lc_work);
+	}
 
-	logbuffer_log(pogo_transport->log, "H2S: %u", pogo_transport->lid_closed);
+	logbuffer_log(pogo_transport->log, "H2S: %u", pogo_transport->lc);
+
+	if (pogo_transport->state_machine_enabled)
+		pogo_transport_queue_event(pogo_transport, EVENT_LC_STATUS_CHANGED);
+
 	return size;
 }
 static DEVICE_ATTR_WO(hall2_s);
