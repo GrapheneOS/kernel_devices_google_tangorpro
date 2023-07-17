@@ -10,7 +10,7 @@
 
 &spi_16 {
         dw3xxx_prod@0 {
-                min_clamp = <600>;
+                min_clamp = <800>;
         };
 };
 
