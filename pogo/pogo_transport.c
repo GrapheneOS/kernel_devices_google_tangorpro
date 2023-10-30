@@ -183,6 +183,7 @@ enum pogo_event_type {
 #define EVENT_USBC_ORIENTATION		BIT(7)
 #define EVENT_LC_STATUS_CHANGED		BIT(8)
 #define EVENT_USB_SUSPEND		BIT(9)
+#define EVENT_FORCE_POGO		BIT(10)
 #define EVENT_LAST_EVENT_TYPE		BIT(63)
 
 enum lc_stages {
@@ -1566,6 +1567,31 @@ static void pogo_transport_enable_usb_data(struct pogo_transport *pogo_transport
 }
 
 /*
+ * Called when device attribute "force_pogo" is written to 1
+ *  - Triggered from event: EVENT_FORCE_POGO
+ *
+ * This function is guarded by (max77759_plat)->data_path_lock
+ */
+static void pogo_transport_force_pogo(struct pogo_transport *pogo_transport)
+{
+	struct max77759_plat *chip = pogo_transport->chip;
+
+	switch (pogo_transport->state) {
+	case HOST_DIRECT_DOCK_OFFLINE:
+		switch_to_hub_locked(pogo_transport);
+		/*
+		 * Set data_active so that once USB-C cable is detached later, Type-C stack is able
+		 * to call back for the data changed event
+		 */
+		chip->data_active = true;
+		pogo_transport_set_state(pogo_transport, DOCK_HUB_HOST_OFFLINE, 0);
+		break;
+	default:
+		return;
+	}
+}
+
+/*
  * Call this function to:
  *  - Disable POGO OVP
  *  - Disable Accessory Detection IRQ
@@ -2272,6 +2298,10 @@ static void pogo_transport_event_handler(struct kthread_work *work)
 		if (events & EVENT_ENABLE_USB_DATA) {
 			logbuffer_log(pogo_transport->log, "EV:ENABLE_USB");
 			pogo_transport_enable_usb_data(pogo_transport);
+		}
+		if (events & EVENT_FORCE_POGO) {
+			logbuffer_log(pogo_transport->log, "EV:FORCE_POGO");
+			pogo_transport_force_pogo(pogo_transport);
 		}
 		if (events & EVENT_HES_H1S_CHANGED) {
 			logbuffer_log(pogo_transport->log, "EV:H1S state %d",
@@ -3245,9 +3275,15 @@ static ssize_t force_pogo_store(struct device *dev, struct device_attribute *att
 	if (kstrtobool(buf, &force_pogo))
 		return -EINVAL;
 
+	if (pogo_transport->force_pogo == force_pogo)
+		return size;
+
 	pogo_transport->force_pogo = force_pogo;
 	if (force_pogo && !pogo_transport->state_machine_enabled)
 		pogo_transport_event(pogo_transport, EVENT_MOVE_DATA_TO_POGO, 0);
+
+	if (force_pogo && pogo_transport->state_machine_enabled)
+		pogo_transport_queue_event(pogo_transport, EVENT_FORCE_POGO);
 
 	return size;
 }
