@@ -50,9 +50,10 @@ maxim,config {
 	};
 
 	/* 3125_1_101421_RC2_send.002.raw.model.ini.txt http://b/231675666#comment9 */
+	/* change MiscCFG https://b/309375239#comment6 */
 	maxim,cos-a1-1k {
 		maxim,batt-id-kohm = <1>;
-		maxim,model-version = <1>;
+		maxim,model-version = <2>;
 		maxim,force-reset-model-data;
 		maxim,fg-model = /bits/ 16 <
 			0x9ff0 0xb620 0xb7f0 0xb9a0 0xbb90 0xbce0 0xbe00 0xbf70
@@ -85,7 +86,7 @@ maxim,config {
 			/* 0x002C */	0xEE0C	/* TGain */
 			/* 0x002D */	0x1DF9	/* TOff */
 			/* 0x00B9 */	0x0012	/* Curve */
-			/* 0x002B */	0x3830	/* MiscCFG */
+			/* 0x002B */	0x3870	/* MiscCFG */
 			/* 0x0004 */	0x1900	/* AtRate */
 			/* 0x0049 */	0x2441	/* convgcfg */
 			/* 0x0029 */	0xc623	/* FilterCFG */
@@ -94,9 +95,10 @@ maxim,config {
 	};
 
 	/* 3242_2_040722_RC2_send.048.raw.model.ini.txt http://b/231675666#comment9 */
+	/* change MiscCFG https://b/309375239#comment6 */
 	maxim,hpt-a1-5k {
 		maxim,batt-id-kohm = <5>;
-		maxim,model-version = <1>;
+		maxim,model-version = <2>;
 		maxim,force-reset-model-data;
 		maxim,fg-model = /bits/ 16 <
 			0xa000 0xb530 0xb730 0xb930 0xbaf0 0xbcb0 0xbd50 0xbea0
@@ -129,7 +131,7 @@ maxim,config {
 			/* 0x002C */	0xEE0C	/* TGain */
 			/* 0x002D */	0x1DF9	/* TOff */
 			/* 0x00B9 */	0x0012	/* Curve */
-			/* 0x002B */	0x3830	/* MiscCFG */
+			/* 0x002B */	0x3870	/* MiscCFG */
 			/* 0x0004 */	0x1900	/* AtRate */
 			/* 0x0049 */	0x2441	/* convgcfg */
 			/* 0x0029 */	0xc623	/* FilterCFG */
