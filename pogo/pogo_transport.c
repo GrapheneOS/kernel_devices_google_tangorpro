@@ -279,6 +279,8 @@ struct pogo_transport {
 	bool pogo_irq_enabled;
 	/* When true, acc irq is enabled */
 	bool acc_irq_enabled;
+	/* True if acc gpio was active before the acc irq was disabled */
+	bool acc_gpio_result_cache;
 	/* When true, hall1_s sensor reports attach event */
 	bool hall1_s_state;
 	/* When true, the path won't switch to pogo if accessory is attached */
@@ -1240,25 +1242,31 @@ static void pogo_transport_pogo_irq_active(struct pogo_transport *pogo_transport
 {
 	switch (pogo_transport->state) {
 	case STANDBY:
+	case STANDBY_ACC_DEBOUNCED:
 		pogo_transport_set_state(pogo_transport, DOCKING_DEBOUNCED, POGO_PSY_DEBOUNCE_MS);
 		break;
 	case DEVICE_HUB:
+	case DEVICE_HUB_ACC_DEBOUNCED:
 		pogo_transport_set_state(pogo_transport, DEVICE_HUB_DOCKING_DEBOUNCED,
 					 POGO_PSY_DEBOUNCE_MS);
 		break;
 	case DEVICE_DIRECT:
+	case DEVICE_DIRECT_ACC_DEBOUNCED:
 		pogo_transport_set_state(pogo_transport, DEVICE_DOCKING_DEBOUNCED,
 					 POGO_PSY_DEBOUNCE_MS);
 		break;
 	case AUDIO_DIRECT:
+	case AUDIO_DIRECT_ACC_DEBOUNCED:
 		pogo_transport_set_state(pogo_transport, AUDIO_DIRECT_DOCKING_DEBOUNCED,
 					 POGO_PSY_DEBOUNCE_MS);
 		break;
 	case AUDIO_HUB:
+	case AUDIO_HUB_ACC_DEBOUNCED:
 		pogo_transport_set_state(pogo_transport, AUDIO_HUB_DOCKING_DEBOUNCED,
 					 POGO_PSY_DEBOUNCE_MS);
 		break;
 	case HOST_DIRECT:
+	case HOST_DIRECT_ACC_DEBOUNCED:
 		pogo_transport_set_state(pogo_transport, HOST_DIRECT_DOCKING_DEBOUNCED,
 					 POGO_PSY_DEBOUNCE_MS);
 		break;
@@ -2312,8 +2320,13 @@ static void pogo_transport_event_handler(struct kthread_work *work)
 				pogo_transport_hes_acc_detached(pogo_transport);
 		}
 		if (events & EVENT_ACC_GPIO_ACTIVE) {
-			logbuffer_log(pogo_transport->log, "EV:ACC_GPIO_ACTIVE");
-			pogo_transport_acc_debouncing(pogo_transport);
+			logbuffer_log(pogo_transport->log, "EV:ACC_GPIO_ACTIVE, H1S %d",
+				      pogo_transport->hall1_s_state);
+			/* b/288341638 step to debouncing only if H1S stays active */
+			if (pogo_transport->hall1_s_state)
+				pogo_transport_acc_debouncing(pogo_transport);
+			else
+				pogo_transport_hes_acc_detached(pogo_transport);
 		}
 		if (events & EVENT_ACC_CONNECTED) {
 			logbuffer_log(pogo_transport->log, "EV:ACC_CONNECTED");
@@ -2394,18 +2407,23 @@ static enum alarmtimer_restart lc_check_alarm_handler(struct alarm *alarm, ktime
 static irqreturn_t pogo_acc_irq(int irq, void *dev_id)
 {
 	struct pogo_transport *pogo_transport = dev_id;
-	int pogo_acc_gpio = gpio_get_value(pogo_transport->pogo_acc_gpio);
+
+	/*
+	 * Cache the acc gpio result as it might change after the IRQ is disabled and we need the
+	 * latest acc gpio status before the disabling of the IRQ.
+	 */
+	pogo_transport->acc_gpio_result_cache = gpio_get_value(pogo_transport->pogo_acc_gpio);
 
 	logbuffer_log(pogo_transport->log, "Pogo acc threaded irq running, acc_detect %u",
-		      pogo_acc_gpio);
+		      pogo_transport->acc_gpio_result_cache);
 
 	if (pogo_transport->state_machine_enabled) {
-		if (pogo_acc_gpio)
+		if (pogo_transport->acc_gpio_result_cache)
 			pogo_transport_queue_event(pogo_transport, EVENT_ACC_GPIO_ACTIVE);
 		return IRQ_HANDLED;
 	}
 
-	if (pogo_acc_gpio)
+	if (pogo_transport->acc_gpio_result_cache)
 		pogo_transport_event(pogo_transport, EVENT_POGO_ACC_DEBOUNCED,
 				     pogo_transport->pogo_acc_gpio_debounce_ms);
 	else
@@ -2433,6 +2451,25 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 
 	if (pogo_transport->acc_detect_ldo &&
 	    regulator_is_enabled(pogo_transport->acc_detect_ldo) > 0) {
+		/*
+		 * b/288341638 If the cached acc gpio is not active, it means that the IV detection
+		 * has failed when the acc detection regulator is enabled. If the state machine
+		 * stays at *_ACC_DEBOUNCED states, i.e., the H1S state is still active, docking
+		 * will fail because it "looks like" a normal acc connection. Disable the acc
+		 * regulator in this situation and continue to the docking detection procedure.
+		 */
+		if (!pogo_transport->acc_gpio_result_cache) {
+			if (pogo_transport->acc_irq_enabled) {
+				disable_irq_nosync(pogo_transport->pogo_acc_irq);
+				pogo_transport->acc_irq_enabled = false;
+				logbuffer_log(pogo_transport->log, "acc_irq disabled");
+			}
+			pogo_transport_acc_regulator(pogo_transport, false);
+			logbuffer_log(pogo_transport->log,
+				      "HES mistriggered, begin docking detection");
+			goto dock_detection;
+		}
+
 		if (pogo_transport->pogo_irq_enabled) {
 			/* disable the irq to prevent the interrupt storm after pogo 5v out */
 			disable_irq_nosync(pogo_transport->pogo_irq);
@@ -2445,7 +2482,7 @@ static irqreturn_t pogo_irq(int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 
-
+dock_detection:
 	if (pogo_transport->pogo_ovp_en_gpio >= 0) {
 		int ret;
 
