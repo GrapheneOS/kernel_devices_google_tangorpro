@@ -354,6 +354,8 @@ struct pogo_transport {
 	/* Cache values from the Type-C driver */
 	enum typec_data_role usbc_data_role;
 	bool usbc_data_active;
+
+	bool charging_only;
 };
 
 static const unsigned int pogo_extcon_cable[] = {
@@ -2274,6 +2276,10 @@ static void pogo_transport_event_handler(struct kthread_work *work)
 
 		if (events & EVENT_POGO_IRQ) {
 			int pogo_gpio = gpio_get_value(pogo_transport->pogo_gpio);
+			if (pogo_transport->charging_only) {
+				logbuffer_log(pogo_transport->log, "charging_only: EVENT_POGO_IRQ: overridden pogo_gpio to 1");
+				pogo_gpio = 1;
+			}
 
 			logbuffer_log(pogo_transport->log, "EV:POGO_IRQ %s", pogo_gpio ?
 				      "STANDBY" : "ACTIVE");
@@ -2314,6 +2320,11 @@ static void pogo_transport_event_handler(struct kthread_work *work)
 		if (events & EVENT_HES_H1S_CHANGED) {
 			logbuffer_log(pogo_transport->log, "EV:H1S state %d",
 				      pogo_transport->hall1_s_state);
+			if (pogo_transport->charging_only) {
+				logbuffer_log(pogo_transport->log, "charging_only: EVENT_HES_H1S_CHANGED: overriden hall1_s_state to 0");
+				pogo_transport->hall1_s_state = 0;
+			}
+
 			if (pogo_transport->hall1_s_state)
 				pogo_transport_hes_acc_detected(pogo_transport);
 			else
@@ -2323,18 +2334,29 @@ static void pogo_transport_event_handler(struct kthread_work *work)
 			logbuffer_log(pogo_transport->log, "EV:ACC_GPIO_ACTIVE, H1S %d",
 				      pogo_transport->hall1_s_state);
 			/* b/288341638 step to debouncing only if H1S stays active */
-			if (pogo_transport->hall1_s_state)
-				pogo_transport_acc_debouncing(pogo_transport);
-			else
+			if (pogo_transport->hall1_s_state) {
+				if (pogo_transport->charging_only) {
+					logbuffer_log(pogo_transport->log, "charging_only: suppressed ACC_GPIO_ACTIVE");
+				} else {
+					pogo_transport_acc_debouncing(pogo_transport);
+				}
+			} else {
 				pogo_transport_hes_acc_detached(pogo_transport);
+			}
 		}
 		if (events & EVENT_ACC_CONNECTED) {
 			logbuffer_log(pogo_transport->log, "EV:ACC_CONNECTED");
-			pogo_transport_acc_connected(pogo_transport);
+			if (pogo_transport->charging_only)
+				logbuffer_log(pogo_transport->log, "charging_only: suppressed ACC_CONNECTED");
+			else
+				pogo_transport_acc_connected(pogo_transport);
 		}
 		if (events & EVENT_AUDIO_DEV_ATTACHED) {
 			logbuffer_log(pogo_transport->log, "EV:AUDIO_ATTACHED");
-			pogo_transport_audio_dev_attached(pogo_transport);
+			if (pogo_transport->charging_only)
+				logbuffer_log(pogo_transport->log, "charging_only: suppressed AUDIO_ATTACHED");
+			else
+				pogo_transport_audio_dev_attached(pogo_transport);
 		}
 		if (events & EVENT_USB_SUSPEND) {
 			logbuffer_log(pogo_transport->log, "EV:USB_SUSPEND stage %u",
@@ -3498,6 +3520,38 @@ static ssize_t acc_detect_debounce_ms_show(struct device *dev, struct device_att
 }
 static DEVICE_ATTR_RW(acc_detect_debounce_ms);
 
+static ssize_t charging_only_store(struct device *dev, struct device_attribute *attr,
+					    const char *buf, size_t size) {
+	struct pogo_transport *pogo_transport = dev_get_drvdata(dev);
+	unsigned int cmd;
+
+	if (kstrtouint(buf, 0, &cmd))
+		return -EINVAL;
+
+	switch (cmd) {
+	case 0: // disable charging-only mode
+	case 1: // enable charging-only mode, but don't eject currently connected devices
+	case 2: // enable charging-only mode immediately
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	pogo_transport->charging_only = cmd != 0;
+	if (cmd != 1)
+		pogo_transport_queue_event(pogo_transport, EVENT_POGO_IRQ);
+
+	return size;
+}
+
+static ssize_t charging_only_show(struct device *dev, struct device_attribute *attr,
+					   char *buf) {
+	struct pogo_transport *pogo_transport  = dev_get_drvdata(dev);
+	return sysfs_emit(buf, "%u\n", pogo_transport->charging_only);
+}
+
+static DEVICE_ATTR_RW(charging_only);
+
 static struct attribute *pogo_transport_attrs[] = {
 	&dev_attr_move_data_to_usb.attr,
 	&dev_attr_equal_priority.attr,
@@ -3508,6 +3562,7 @@ static struct attribute *pogo_transport_attrs[] = {
 	&dev_attr_hall1_n.attr,
 	&dev_attr_hall2_s.attr,
 	&dev_attr_acc_detect_debounce_ms.attr,
+	&dev_attr_charging_only.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(pogo_transport);
