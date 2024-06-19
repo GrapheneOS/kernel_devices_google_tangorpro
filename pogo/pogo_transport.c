@@ -209,6 +209,9 @@ static int modparam_state_machine_enable;
 module_param_named(state_machine_enable, modparam_state_machine_enable, int, 0644);
 MODULE_PARM_DESC(state_machine_enable, "Enabling pogo state machine transition");
 
+static bool modparam_charging_only_by_default;
+module_param_named(charging_only_by_default, modparam_charging_only_by_default, bool, 0444);
+
 extern void register_bus_suspend_callback(void (*callback)(void *bus_suspend_payload, bool main_hcd,
 							   bool suspend),
 					  void *data);
@@ -3051,6 +3054,9 @@ static int pogo_transport_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto put_client;
 	}
+
+	if (modparam_charging_only_by_default)
+		pogo_transport->charging_only = true;
 
 	pogo_transport->dev = &pdev->dev;
 	pogo_transport->chip = chip;
